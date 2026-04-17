@@ -1,0 +1,1306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TRAINER ACQUISITION SYSTEM — ARBHU INTELLIGENCE</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=Share+Tech+Mono&family=Rajdhani:wght@300;400;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #04080f;
+    --bg2: #080e1a;
+    --bg3: #0d1626;
+    --cyan: #00d4ff;
+    --cyan-dim: #0099bb;
+    --green: #00ff9d;
+    --orange: #ff6b35;
+    --red: #ff2d55;
+    --text: #8fb3d3;
+    --text-bright: #cce4f5;
+    --border: #1a2d45;
+    --border-bright: #2a4a6a;
+    --glow-cyan: 0 0 10px rgba(0,212,255,0.4), 0 0 30px rgba(0,212,255,0.1);
+    --glow-green: 0 0 10px rgba(0,255,157,0.4), 0 0 30px rgba(0,255,157,0.1);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Share Tech Mono', monospace;
+    min-height: 100vh;
+    overflow-x: hidden;
+    position: relative;
+  }
+
+  /* ── ANIMATED GRID BACKGROUND ── */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(0,212,255,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,212,255,0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    animation: gridDrift 20s linear infinite;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  @keyframes gridDrift {
+    0% { transform: translateY(0); }
+    100% { transform: translateY(40px); }
+  }
+
+  /* Scanline overlay */
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.08) 2px,
+      rgba(0,0,0,0.08) 4px
+    );
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  /* ── TOP HEADER BAR ── */
+  .header-bar {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: 52px;
+    background: rgba(8,14,26,0.95);
+    border-bottom: 1px solid var(--border-bright);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 24px;
+    z-index: 100;
+    backdrop-filter: blur(10px);
+  }
+
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .header-logo {
+    font-family: 'Orbitron', sans-serif;
+    font-weight: 900;
+    font-size: 13px;
+    color: var(--cyan);
+    letter-spacing: 3px;
+    text-shadow: var(--glow-cyan);
+  }
+
+  .header-divider {
+    width: 1px;
+    height: 20px;
+    background: var(--border-bright);
+  }
+
+  .header-subtitle {
+    font-size: 10px;
+    color: var(--text);
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+  }
+
+  .status-pill {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    color: var(--green);
+    letter-spacing: 1px;
+  }
+
+  .status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--green);
+    animation: pulse 2s ease-in-out infinite;
+    box-shadow: var(--glow-green);
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.8); }
+  }
+
+  .sys-clock {
+    font-size: 11px;
+    color: var(--text);
+    letter-spacing: 1px;
+  }
+
+  /* ── MAIN LAYOUT ── */
+  .main-wrap {
+    min-height: 100vh;
+    padding: 72px 0 40px;
+    display: flex;
+    gap: 0;
+    position: relative;
+    z-index: 2;
+  }
+
+  /* ── LEFT SIDEBAR ── */
+  .left-panel {
+    width: 220px;
+    min-width: 220px;
+    padding: 20px 0 20px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .sys-block {
+    background: rgba(13,22,38,0.6);
+    border: 1px solid var(--border);
+    border-left: 2px solid var(--cyan-dim);
+    padding: 12px;
+  }
+
+  .sys-block-title {
+    font-size: 9px;
+    color: var(--cyan-dim);
+    letter-spacing: 2px;
+    margin-bottom: 10px;
+    text-transform: uppercase;
+  }
+
+  .sys-row {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 7px;
+    font-size: 10px;
+  }
+
+  .sys-row-label { color: var(--text); opacity: 0.6; }
+  .sys-row-val { color: var(--text-bright); }
+  .sys-row-val.green { color: var(--green); }
+  .sys-row-val.orange { color: var(--orange); }
+
+  .mini-bar-wrap { margin-top: 4px; }
+  .mini-bar-label { font-size: 9px; color: var(--text); opacity: 0.5; margin-bottom: 3px; }
+  .mini-bar {
+    height: 3px;
+    background: var(--border);
+    border-radius: 2px;
+    margin-bottom: 6px;
+    overflow: hidden;
+  }
+  .mini-bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    background: var(--cyan);
+    animation: barLoad 3s ease-in-out infinite alternate;
+  }
+  @keyframes barLoad {
+    0% { opacity: 0.4; }
+    100% { opacity: 1; }
+  }
+
+  /* ── MAIN CENTER PANEL ── */
+  .center-panel {
+    flex: 1;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .mission-header {
+    text-align: center;
+    margin-bottom: 32px;
+    width: 100%;
+    max-width: 700px;
+  }
+
+  .mission-tag {
+    font-size: 10px;
+    letter-spacing: 4px;
+    color: var(--cyan);
+    margin-bottom: 8px;
+    text-transform: uppercase;
+  }
+
+  .mission-title {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 28px;
+    font-weight: 900;
+    color: #ffffff;
+    letter-spacing: 4px;
+    text-shadow: var(--glow-cyan);
+    margin-bottom: 6px;
+    line-height: 1.2;
+  }
+
+  .mission-desc {
+    font-size: 11px;
+    color: var(--text);
+    letter-spacing: 2px;
+    opacity: 0.7;
+  }
+
+  /* ── FORM PANEL ── */
+  .form-panel {
+    width: 100%;
+    max-width: 700px;
+    background: rgba(8,14,26,0.8);
+    border: 1px solid var(--border-bright);
+    position: relative;
+    overflow: hidden;
+  }
+
+  .form-panel::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--cyan), transparent);
+    animation: scanH 4s ease-in-out infinite;
+  }
+  @keyframes scanH {
+    0%, 100% { opacity: 0.3; transform: scaleX(0.3); }
+    50% { opacity: 1; transform: scaleX(1); }
+  }
+
+  .form-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(0,0,0,0.2);
+  }
+
+  .form-panel-title {
+    font-size: 11px;
+    letter-spacing: 3px;
+    color: var(--cyan);
+    text-transform: uppercase;
+  }
+
+  .form-step-indicator {
+    font-size: 10px;
+    color: var(--text);
+    letter-spacing: 1px;
+  }
+
+  /* Step dots */
+  .step-dots {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .step-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--border-bright);
+    transition: all 0.3s;
+  }
+  .step-dot.active { background: var(--cyan); box-shadow: var(--glow-cyan); }
+  .step-dot.done { background: var(--green); }
+
+  .form-body { padding: 28px; }
+
+  /* Individual step screens */
+  .form-step { display: none; }
+  .form-step.active { display: block; animation: stepIn 0.4s ease; }
+  @keyframes stepIn {
+    from { opacity: 0; transform: translateX(20px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+
+  .field-block { margin-bottom: 28px; }
+
+  .field-tag {
+    font-size: 9px;
+    letter-spacing: 3px;
+    color: var(--cyan-dim);
+    text-transform: uppercase;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .field-tag::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  .field-label {
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--text-bright);
+    letter-spacing: 1px;
+    margin-bottom: 6px;
+  }
+
+  .field-hint {
+    font-size: 10px;
+    color: var(--text);
+    opacity: 0.5;
+    margin-bottom: 14px;
+    letter-spacing: 1px;
+  }
+
+  /* Inputs */
+  input[type="text"],
+  input[type="email"],
+  input[type="number"],
+  select,
+  textarea {
+    width: 100%;
+    background: rgba(0,0,0,0.4);
+    border: 1px solid var(--border-bright);
+    border-left: 3px solid var(--cyan-dim);
+    color: var(--text-bright);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 13px;
+    padding: 12px 16px;
+    outline: none;
+    transition: all 0.3s;
+    -webkit-appearance: none;
+  }
+
+  input[type="text"]:focus,
+  input[type="email"]:focus,
+  input[type="number"]:focus,
+  select:focus,
+  textarea:focus {
+    border-color: var(--cyan);
+    border-left-color: var(--cyan);
+    background: rgba(0,212,255,0.04);
+    box-shadow: var(--glow-cyan);
+    color: #ffffff;
+  }
+
+  select option { background: #0d1626; color: var(--text-bright); }
+
+  textarea { resize: none; line-height: 1.6; }
+
+  /* Radio chips */
+  .chip-row {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 4px;
+  }
+
+  .chip input { display: none; }
+  .chip label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 16px;
+    border: 1px solid var(--border-bright);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 11px;
+    color: var(--text);
+    letter-spacing: 1px;
+    cursor: pointer;
+    transition: all 0.2s;
+    text-transform: uppercase;
+  }
+  .chip label::before {
+    content: '○';
+    font-size: 10px;
+    color: var(--border-bright);
+    transition: all 0.2s;
+  }
+  .chip input:checked + label {
+    border-color: var(--cyan);
+    color: var(--cyan);
+    background: rgba(0,212,255,0.06);
+    box-shadow: var(--glow-cyan);
+  }
+  .chip input:checked + label::before { content: '●'; color: var(--cyan); }
+
+  /* Counter control */
+  .counter-row {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    width: 160px;
+  }
+  .counter-btn {
+    width: 42px; height: 48px;
+    background: rgba(0,0,0,0.4);
+    border: 1px solid var(--border-bright);
+    color: var(--cyan);
+    font-family: 'Orbitron', sans-serif;
+    font-size: 16px;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .counter-btn:hover { background: rgba(0,212,255,0.1); }
+  .counter-display {
+    flex: 1;
+    height: 48px;
+    background: rgba(0,0,0,0.6);
+    border-top: 1px solid var(--border-bright);
+    border-bottom: 1px solid var(--border-bright);
+    border-left: none; border-right: none;
+    color: var(--text-bright);
+    font-family: 'Orbitron', sans-serif;
+    font-size: 18px;
+    font-weight: 700;
+    text-align: center;
+    line-height: 48px;
+    letter-spacing: 2px;
+  }
+
+  /* Nav buttons */
+  .form-nav {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+    margin-top: 8px;
+  }
+
+  .btn-back {
+    background: transparent;
+    border: 1px solid var(--border-bright);
+    color: var(--text);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 2px;
+    padding: 10px 20px;
+    cursor: pointer;
+    transition: all 0.2s;
+    text-transform: uppercase;
+  }
+  .btn-back:hover { border-color: var(--text); color: var(--text-bright); }
+  .btn-back.hidden { visibility: hidden; }
+
+  .btn-next {
+    background: transparent;
+    border: 1px solid var(--cyan);
+    color: var(--cyan);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 3px;
+    padding: 12px 28px;
+    cursor: pointer;
+    transition: all 0.2s;
+    text-transform: uppercase;
+    position: relative;
+    overflow: hidden;
+  }
+  .btn-next::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: var(--cyan);
+    transform: translateX(-100%);
+    transition: transform 0.3s;
+    z-index: -1;
+  }
+  .btn-next:hover { color: var(--bg); }
+  .btn-next:hover::before { transform: translateX(0); }
+
+  .btn-submit {
+    background: var(--cyan);
+    border: none;
+    color: var(--bg);
+    font-family: 'Orbitron', sans-serif;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 3px;
+    padding: 14px 32px;
+    cursor: pointer;
+    transition: all 0.3s;
+    text-transform: uppercase;
+    box-shadow: var(--glow-cyan);
+  }
+  .btn-submit:hover { background: #ffffff; transform: translateY(-1px); }
+  .btn-submit:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+  /* ── RIGHT SIDEBAR ── */
+  .right-panel {
+    width: 200px;
+    min-width: 200px;
+    padding: 20px 20px 20px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .pipeline-preview {
+    background: rgba(13,22,38,0.6);
+    border: 1px solid var(--border);
+    border-right: 2px solid var(--cyan-dim);
+    padding: 12px;
+  }
+
+  .pipeline-title {
+    font-size: 9px;
+    color: var(--cyan-dim);
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+  }
+
+  .pipeline-stage {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin-bottom: 10px;
+    position: relative;
+  }
+
+  .pipeline-stage::before {
+    content: '';
+    position: absolute;
+    left: 7px;
+    top: 18px;
+    bottom: -10px;
+    width: 1px;
+    background: var(--border);
+  }
+  .pipeline-stage:last-child::before { display: none; }
+
+  .p-dot {
+    width: 15px; height: 15px;
+    min-width: 15px;
+    border-radius: 50%;
+    border: 1px solid var(--border-bright);
+    background: var(--bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 7px;
+    color: var(--text);
+    margin-top: 1px;
+  }
+
+  .p-info { flex: 1; }
+  .p-name { font-size: 10px; color: var(--text-bright); margin-bottom: 2px; letter-spacing: 1px; }
+  .p-tool { font-size: 9px; color: var(--text); opacity: 0.5; }
+
+  /* ── WAITING / MISSION ACCEPTED SCREEN ── */
+  #screen-waiting {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: var(--bg);
+    z-index: 200;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 20px;
+  }
+
+  #screen-waiting.visible {
+    display: flex;
+    animation: fadeIn 0.8s ease;
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  .accepted-tag {
+    font-size: 10px;
+    letter-spacing: 5px;
+    color: var(--green);
+    text-transform: uppercase;
+    margin-bottom: 8px;
+    animation: blink 1.5s step-end infinite;
+  }
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  .accepted-title {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 36px;
+    font-weight: 900;
+    color: #ffffff;
+    letter-spacing: 6px;
+    text-shadow: var(--glow-green);
+    margin-bottom: 4px;
+    text-align: center;
+  }
+
+  .accepted-id {
+    font-size: 11px;
+    color: var(--text);
+    letter-spacing: 3px;
+    margin-bottom: 40px;
+    opacity: 0.6;
+  }
+
+  /* Mission stages */
+  .mission-stages {
+    width: 100%;
+    max-width: 560px;
+    margin-bottom: 40px;
+  }
+
+  .m-stage {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 14px 20px;
+    border: 1px solid var(--border);
+    margin-bottom: 8px;
+    background: rgba(13,22,38,0.4);
+    transition: all 0.5s;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .m-stage.active {
+    border-color: var(--cyan);
+    background: rgba(0,212,255,0.04);
+  }
+
+  .m-stage.active::before {
+    content: '';
+    position: absolute;
+    top: 0; left: -100%;
+    width: 60%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(0,212,255,0.08), transparent);
+    animation: sweep 2s linear infinite;
+  }
+  @keyframes sweep {
+    from { left: -60%; }
+    to { left: 120%; }
+  }
+
+  .m-stage-num {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--text);
+    opacity: 0.4;
+    width: 20px;
+    text-align: center;
+    letter-spacing: 1px;
+  }
+  .m-stage.active .m-stage-num { color: var(--cyan); opacity: 1; }
+
+  .m-stage-bar {
+    width: 40px;
+    height: 2px;
+    background: var(--border);
+    position: relative;
+    overflow: hidden;
+  }
+  .m-stage.active .m-stage-bar { background: rgba(0,212,255,0.2); }
+  .m-stage.active .m-stage-bar::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: var(--cyan);
+    animation: barFill 2s ease-in-out infinite;
+  }
+  @keyframes barFill {
+    0%, 100% { transform: scaleX(0.2); transform-origin: left; }
+    50% { transform: scaleX(1); transform-origin: left; }
+  }
+
+  .m-stage-info { flex: 1; }
+  .m-stage-name {
+    font-size: 12px;
+    color: var(--text-bright);
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    margin-bottom: 2px;
+  }
+  .m-stage.active .m-stage-name { color: var(--cyan); }
+
+  .m-stage-sub {
+    font-size: 9px;
+    color: var(--text);
+    opacity: 0.5;
+    letter-spacing: 1px;
+  }
+
+  .m-stage-status {
+    font-size: 9px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--text);
+    opacity: 0.3;
+  }
+  .m-stage.active .m-stage-status { color: var(--cyan); opacity: 1; animation: blink 1.5s step-end infinite; }
+
+  /* Waiting info block */
+  .waiting-info {
+    width: 100%;
+    max-width: 560px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 32px;
+  }
+
+  .w-info-box {
+    background: rgba(13,22,38,0.6);
+    border: 1px solid var(--border);
+    padding: 14px 16px;
+  }
+
+  .w-info-label {
+    font-size: 9px;
+    color: var(--text);
+    opacity: 0.5;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+
+  .w-info-val {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-bright);
+    letter-spacing: 1px;
+  }
+  .w-info-val.cyan { color: var(--cyan); text-shadow: var(--glow-cyan); }
+
+  .waiting-footer {
+    font-size: 10px;
+    color: var(--text);
+    opacity: 0.4;
+    letter-spacing: 2px;
+    text-align: center;
+    line-height: 1.8;
+  }
+
+  /* Counter ticker */
+  .ticker {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 11px;
+    color: var(--green);
+    letter-spacing: 2px;
+    text-shadow: var(--glow-green);
+  }
+
+  /* Error state */
+  .field-error {
+    font-size: 10px;
+    color: var(--red);
+    letter-spacing: 1px;
+    margin-top: 6px;
+    display: none;
+  }
+  .field-error.show { display: block; }
+
+  /* Responsive */
+  @media (max-width: 900px) {
+    .left-panel, .right-panel { display: none; }
+    .center-panel { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ══ HEADER BAR ══ -->
+<div class="header-bar">
+  <div class="header-left">
+    <div class="header-logo">ARBHU</div>
+    <div class="header-divider"></div>
+    <div class="header-subtitle">Trainer Acquisition System // v2.1</div>
+  </div>
+  <div class="header-right">
+    <div class="status-pill">
+      <div class="status-dot"></div>
+      SYSTEM ONLINE
+    </div>
+    <div class="sys-clock" id="clock">--:--:-- IST</div>
+  </div>
+</div>
+
+<!-- ══ WAITING SCREEN (shown after submit) ══ -->
+<div id="screen-waiting">
+  <div class="accepted-tag">▸▸ TRANSMISSION RECEIVED ◂◂</div>
+  <div class="accepted-title">MISSION ACCEPTED</div>
+  <div class="accepted-id" id="mission-id">MISSION ID: GENERATING...</div>
+
+  <div class="mission-stages">
+    <div class="m-stage active">
+      <div class="m-stage-num">01</div>
+      <div class="m-stage-bar"></div>
+      <div class="m-stage-info">
+        <div class="m-stage-name">Discovery</div>
+        <div class="m-stage-sub">Scanning LinkedIn · UrbanPro · Fiverr · Guru · YouTube</div>
+      </div>
+      <div class="m-stage-status">IN PROGRESS</div>
+    </div>
+    <div class="m-stage">
+      <div class="m-stage-num">02</div>
+      <div class="m-stage-bar"></div>
+      <div class="m-stage-info">
+        <div class="m-stage-name">Filter</div>
+        <div class="m-stage-sub">India · Role · Deduplication</div>
+      </div>
+      <div class="m-stage-status">QUEUED</div>
+    </div>
+    <div class="m-stage">
+      <div class="m-stage-num">03</div>
+      <div class="m-stage-bar"></div>
+      <div class="m-stage-info">
+        <div class="m-stage-name">Enrichment</div>
+        <div class="m-stage-sub">Clay waterfall · Email · Phone · Certifications</div>
+      </div>
+      <div class="m-stage-status">QUEUED</div>
+    </div>
+    <div class="m-stage">
+      <div class="m-stage-num">04</div>
+      <div class="m-stage-bar"></div>
+      <div class="m-stage-info">
+        <div class="m-stage-name">Scoring</div>
+        <div class="m-stage-sub">Confidence algorithm · Verification tiers</div>
+      </div>
+      <div class="m-stage-status">QUEUED</div>
+    </div>
+    <div class="m-stage">
+      <div class="m-stage-num">05</div>
+      <div class="m-stage-bar"></div>
+      <div class="m-stage-info">
+        <div class="m-stage-name">Packaging</div>
+        <div class="m-stage-sub">Excel report · Dashboard · Audit log</div>
+      </div>
+      <div class="m-stage-status">QUEUED</div>
+    </div>
+  </div>
+
+  <div class="waiting-info">
+    <div class="w-info-box">
+      <div class="w-info-label">Domain</div>
+      <div class="w-info-val cyan" id="w-domain">—</div>
+    </div>
+    <div class="w-info-box">
+      <div class="w-info-label">Target Trainers</div>
+      <div class="w-info-val cyan" id="w-count">—</div>
+    </div>
+    <div class="w-info-box">
+      <div class="w-info-label">Est. Completion</div>
+      <div class="w-info-val">2 – 4 HOURS</div>
+    </div>
+    <div class="w-info-box">
+      <div class="w-info-label">Candidates Analyzed</div>
+      <div class="w-info-val ticker" id="ticker">0</div>
+    </div>
+  </div>
+
+  <div class="waiting-footer">
+    NOTIFICATION WILL BE DISPATCHED TO <span id="w-email" style="color:var(--cyan-dim);letter-spacing:1px;"></span><br>
+    YOU MAY CLOSE THIS WINDOW. THE MISSION CONTINUES.
+  </div>
+</div>
+
+<!-- ══ MAIN LAYOUT ══ -->
+<div class="main-wrap">
+
+  <!-- LEFT PANEL -->
+  <div class="left-panel">
+    <div class="sys-block">
+      <div class="sys-block-title">// System Status</div>
+      <div class="sys-row"><span class="sys-row-label">Apify</span><span class="sys-row-val green">ONLINE</span></div>
+      <div class="sys-row"><span class="sys-row-label">Clay</span><span class="sys-row-val green">ONLINE</span></div>
+      <div class="sys-row"><span class="sys-row-label">Rippletide</span><span class="sys-row-val green">ONLINE</span></div>
+      <div class="sys-row"><span class="sys-row-label">Notification</span><span class="sys-row-val green">READY</span></div>
+    </div>
+    <div class="sys-block">
+      <div class="sys-block-title">// Data Sources</div>
+      <div class="sys-row"><span class="sys-row-label">LinkedIn</span><span class="sys-row-val green">●</span></div>
+      <div class="sys-row"><span class="sys-row-label">UrbanPro</span><span class="sys-row-val green">●</span></div>
+      <div class="sys-row"><span class="sys-row-label">Fiverr</span><span class="sys-row-val green">●</span></div>
+      <div class="sys-row"><span class="sys-row-label">Guru</span><span class="sys-row-val green">●</span></div>
+      <div class="sys-row"><span class="sys-row-label">Truelancer</span><span class="sys-row-val green">●</span></div>
+      <div class="sys-row"><span class="sys-row-label">YouTube</span><span class="sys-row-val green">●</span></div>
+    </div>
+    <div class="sys-block">
+      <div class="sys-block-title">// Last Runs</div>
+      <div class="sys-row"><span class="sys-row-label">AWS</span><span class="sys-row-val">Apr 10</span></div>
+      <div class="sys-row"><span class="sys-row-label">Trainers</span><span class="sys-row-val orange">25</span></div>
+      <div class="sys-row"><span class="sys-row-label">Confidence</span><span class="sys-row-val orange">42%</span></div>
+    </div>
+  </div>
+
+  <!-- CENTER PANEL -->
+  <div class="center-panel">
+    <div class="mission-header">
+      <div class="mission-tag">▸ INITIATE ACQUISITION SEQUENCE ◂</div>
+      <div class="mission-title">MISSION BRIEF</div>
+      <div class="mission-desc">VERIFIED · SOURCE-BOUND · HALLUCINATION-FREE</div>
+    </div>
+
+    <div class="form-panel">
+      <div class="form-panel-header">
+        <div class="form-panel-title">// Trainer Requirement Submission</div>
+        <div class="step-dots">
+          <div class="step-dot active" id="dot-1"></div>
+          <div class="step-dot" id="dot-2"></div>
+          <div class="step-dot" id="dot-3"></div>
+          <div class="step-dot" id="dot-4"></div>
+        </div>
+      </div>
+
+      <form id="mission-form" action="https://formspree.io/f/xbdqooja" method="POST">
+
+        <div class="form-body">
+
+          <!-- STEP 1: OPERATOR + DOMAIN -->
+          <div class="form-step active" id="step-1">
+            <div class="field-block">
+              <div class="field-tag">FIELD_01 // OPERATOR IDENTITY</div>
+              <div class="field-label">Your Name</div>
+              <div class="field-hint">Who is submitting this requirement?</div>
+              <input type="text" name="operator_name" id="f-name" placeholder="e.g. Vijay Sharma" autocomplete="off">
+              <div class="field-error" id="err-name">⚠ NAME REQUIRED TO PROCEED</div>
+            </div>
+            <div class="field-block">
+              <div class="field-tag">FIELD_02 // NOTIFICATION CHANNEL</div>
+              <div class="field-label">Your Email</div>
+              <div class="field-hint">Report and dashboard link will be dispatched here.</div>
+              <input type="email" name="operator_email" id="f-email" placeholder="you@rjpinfotek.com" autocomplete="off">
+              <div class="field-error" id="err-email">⚠ VALID EMAIL REQUIRED</div>
+            </div>
+            <div class="form-nav">
+              <button type="button" class="btn-back hidden">◂ BACK</button>
+              <button type="button" class="btn-next" onclick="nextStep(1)">NEXT ▸</button>
+            </div>
+          </div>
+
+          <!-- STEP 2: DOMAIN + COUNT -->
+          <div class="form-step" id="step-2">
+            <div class="field-block">
+              <div class="field-tag">FIELD_03 // TARGET DOMAIN</div>
+              <div class="field-label">Domain Skill</div>
+              <div class="field-hint">The technology stack you need trainers for.</div>
+              <select name="domain_skill" id="f-domain">
+                <option value="">— SELECT DOMAIN —</option>
+                <option value="AWS">AWS (Amazon Web Services)</option>
+                <option value="Azure">Microsoft Azure</option>
+                <option value="GCP">Google Cloud Platform</option>
+                <option value="Kubernetes">Kubernetes / K8s</option>
+                <option value="DevOps">DevOps (CI/CD, Jenkins, Terraform)</option>
+                <option value="Data Science">Data Science / ML</option>
+                <option value="Java">Java</option>
+                <option value="Cybersecurity">Cybersecurity</option>
+                <option value="Python">Python</option>
+                <option value="Other">Other (specify below)</option>
+              </select>
+              <div class="field-error" id="err-domain">⚠ SELECT A DOMAIN TO PROCEED</div>
+            </div>
+            <div class="field-block" id="other-domain-block" style="display:none;">
+              <div class="field-tag">FIELD_03B // CUSTOM DOMAIN</div>
+              <div class="field-label">Specify Domain</div>
+              <input type="text" name="custom_domain" id="f-custom-domain" placeholder="e.g. React Native, SAP FICO...">
+            </div>
+            <div class="field-block">
+              <div class="field-tag">FIELD_04 // ACQUISITION TARGET</div>
+              <div class="field-label">Number of Trainers Required</div>
+              <div class="field-hint">Default is 25. Increase for larger batches.</div>
+              <div class="counter-row">
+                <button type="button" class="counter-btn" onclick="changeCount(-5)">−</button>
+                <div class="counter-display" id="count-display">25</div>
+                <button type="button" class="counter-btn" onclick="changeCount(5)">+</button>
+              </div>
+              <input type="hidden" name="target_count" id="f-count" value="25">
+            </div>
+            <div class="form-nav">
+              <button type="button" class="btn-back" onclick="prevStep(2)">◂ BACK</button>
+              <button type="button" class="btn-next" onclick="nextStep(2)">NEXT ▸</button>
+            </div>
+          </div>
+
+          <!-- STEP 3: LOCATION + EXCLUSIONS -->
+          <div class="form-step" id="step-3">
+            <div class="field-block">
+              <div class="field-tag">FIELD_05 // GEOGRAPHIC SCOPE</div>
+              <div class="field-label">Location Preference</div>
+              <div class="field-hint">Where should the trainers be based?</div>
+              <div class="chip-row">
+                <div class="chip"><input type="radio" name="location" id="loc-india" value="All India" checked><label for="loc-india">All India</label></div>
+                <div class="chip"><input type="radio" name="location" id="loc-bangalore" value="Bangalore"><label for="loc-bangalore">Bangalore</label></div>
+                <div class="chip"><input type="radio" name="location" id="loc-mumbai" value="Mumbai"><label for="loc-mumbai">Mumbai</label></div>
+                <div class="chip"><input type="radio" name="location" id="loc-delhi" value="Delhi / NCR"><label for="loc-delhi">Delhi / NCR</label></div>
+                <div class="chip"><input type="radio" name="location" id="loc-hyderabad" value="Hyderabad"><label for="loc-hyderabad">Hyderabad</label></div>
+                <div class="chip"><input type="radio" name="location" id="loc-pune" value="Pune"><label for="loc-pune">Pune</label></div>
+              </div>
+            </div>
+            <div class="field-block">
+              <div class="field-tag">FIELD_06 // EXCLUSION LIST</div>
+              <div class="field-label">Trainers to Exclude</div>
+              <div class="field-hint">Paste names of trainers you already have. One per line. Leave blank if none.</div>
+              <textarea name="exclusions" id="f-exclusions" rows="4" placeholder="e.g.&#10;Ram Kumar&#10;Rahul Patel&#10;Nupur Agrawal"></textarea>
+            </div>
+            <div class="form-nav">
+              <button type="button" class="btn-back" onclick="prevStep(3)">◂ BACK</button>
+              <button type="button" class="btn-next" onclick="nextStep(3)">NEXT ▸</button>
+            </div>
+          </div>
+
+          <!-- STEP 4: REVIEW + SUBMIT -->
+          <div class="form-step" id="step-4">
+            <div class="field-block">
+              <div class="field-tag">TRANSMISSION REVIEW</div>
+              <div class="field-label">Confirm Mission Parameters</div>
+              <div class="field-hint">Review before initiating acquisition sequence.</div>
+            </div>
+
+            <div style="background:rgba(0,0,0,0.3);border:1px solid var(--border);padding:16px;margin-bottom:24px;">
+              <div class="sys-row" style="margin-bottom:12px;"><span class="sys-row-label">OPERATOR</span><span class="sys-row-val" id="rev-name">—</span></div>
+              <div class="sys-row" style="margin-bottom:12px;"><span class="sys-row-label">EMAIL</span><span class="sys-row-val" id="rev-email">—</span></div>
+              <div class="sys-row" style="margin-bottom:12px;"><span class="sys-row-label">DOMAIN</span><span class="sys-row-val cyan" id="rev-domain">—</span></div>
+              <div class="sys-row" style="margin-bottom:12px;"><span class="sys-row-label">TARGET COUNT</span><span class="sys-row-val cyan" id="rev-count">—</span></div>
+              <div class="sys-row" style="margin-bottom:12px;"><span class="sys-row-label">LOCATION</span><span class="sys-row-val" id="rev-location">—</span></div>
+              <div class="sys-row"><span class="sys-row-label">EXCLUSIONS</span><span class="sys-row-val" id="rev-exclusions" style="text-align:right;max-width:60%;font-size:10px;">—</span></div>
+            </div>
+
+            <div style="font-size:10px;color:var(--text);opacity:0.5;letter-spacing:1px;margin-bottom:20px;line-height:1.8;">
+              BY SUBMITTING, YOU AUTHORIZE ARBHU INTELLIGENCE TO EXECUTE A 5-STAGE<br>
+              TRAINER DISCOVERY AND VERIFICATION SEQUENCE. RESULTS WILL BE DISPATCHED<br>
+              TO YOUR EMAIL WITHIN 2–4 HOURS.
+            </div>
+
+            <!-- Hidden honeypot field -->
+            <input type="text" name="_gotcha" style="display:none">
+            <input type="hidden" name="_subject" id="form-subject" value="New Trainer Requirement">
+
+            <div class="form-nav">
+              <button type="button" class="btn-back" onclick="prevStep(4)">◂ BACK</button>
+              <button type="submit" class="btn-submit" id="submit-btn">▸▸ INITIATE SEQUENCE ◂◂</button>
+            </div>
+          </div>
+
+        </div><!-- /form-body -->
+      </form>
+    </div><!-- /form-panel -->
+  </div><!-- /center-panel -->
+
+  <!-- RIGHT PANEL -->
+  <div class="right-panel">
+    <div class="pipeline-preview">
+      <div class="pipeline-title">// Pipeline Sequence</div>
+      <div class="pipeline-stage">
+        <div class="p-dot">01</div>
+        <div class="p-info">
+          <div class="p-name">Discovery</div>
+          <div class="p-tool">Apify · SERP · LinkedIn</div>
+        </div>
+      </div>
+      <div class="pipeline-stage">
+        <div class="p-dot">02</div>
+        <div class="p-info">
+          <div class="p-name">Filter</div>
+          <div class="p-tool">India · Role · Dedup</div>
+        </div>
+      </div>
+      <div class="pipeline-stage">
+        <div class="p-dot">03</div>
+        <div class="p-info">
+          <div class="p-name">Enrichment</div>
+          <div class="p-tool">Clay · Email · Phone</div>
+        </div>
+      </div>
+      <div class="pipeline-stage">
+        <div class="p-dot">04</div>
+        <div class="p-info">
+          <div class="p-name">Scoring</div>
+          <div class="p-tool">Confidence · Rank</div>
+        </div>
+      </div>
+      <div class="pipeline-stage">
+        <div class="p-dot">05</div>
+        <div class="p-info">
+          <div class="p-name">Packaging</div>
+          <div class="p-tool">Excel · Dashboard</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sys-block">
+      <div class="sys-block-title">// SLA</div>
+      <div class="sys-row"><span class="sys-row-label">Delivery</span><span class="sys-row-val">2–4 hrs</span></div>
+      <div class="sys-row"><span class="sys-row-label">Min confidence</span><span class="sys-row-val orange">≥50%</span></div>
+      <div class="sys-row"><span class="sys-row-label">Email verified</span><span class="sys-row-val">≥60%</span></div>
+      <div class="sys-row"><span class="sys-row-label">Sources cited</span><span class="sys-row-val green">100%</span></div>
+    </div>
+  </div>
+
+</div><!-- /main-wrap -->
+
+<script>
+  // ── CLOCK ──
+  function updateClock() {
+    const now = new Date();
+    const h = String(now.getHours()).padStart(2,'0');
+    const m = String(now.getMinutes()).padStart(2,'0');
+    const s = String(now.getSeconds()).padStart(2,'0');
+    document.getElementById('clock').textContent = `${h}:${m}:${s} IST`;
+  }
+  setInterval(updateClock, 1000);
+  updateClock();
+
+  // ── COUNTER ──
+  let trainerCount = 25;
+  function changeCount(delta) {
+    trainerCount = Math.max(10, Math.min(100, trainerCount + delta));
+    document.getElementById('count-display').textContent = trainerCount;
+    document.getElementById('f-count').value = trainerCount;
+  }
+
+  // ── SHOW CUSTOM DOMAIN ──
+  document.getElementById('f-domain').addEventListener('change', function() {
+    document.getElementById('other-domain-block').style.display =
+      this.value === 'Other' ? 'block' : 'none';
+  });
+
+  // ── STEP NAVIGATION ──
+  function setDots(step) {
+    for (let i = 1; i <= 4; i++) {
+      const dot = document.getElementById(`dot-${i}`);
+      dot.className = 'step-dot';
+      if (i < step) dot.classList.add('done');
+      else if (i === step) dot.classList.add('active');
+    }
+  }
+
+  function nextStep(current) {
+    if (!validateStep(current)) return;
+    if (current === 4) return;
+    if (current === 3) populateReview();
+    document.getElementById(`step-${current}`).classList.remove('active');
+    document.getElementById(`step-${current + 1}`).classList.add('active');
+    setDots(current + 1);
+  }
+
+  function prevStep(current) {
+    document.getElementById(`step-${current}`).classList.remove('active');
+    document.getElementById(`step-${current - 1}`).classList.add('active');
+    setDots(current - 1);
+  }
+
+  function validateStep(step) {
+    let ok = true;
+    if (step === 1) {
+      const name = document.getElementById('f-name').value.trim();
+      const email = document.getElementById('f-email').value.trim();
+      const errName = document.getElementById('err-name');
+      const errEmail = document.getElementById('err-email');
+      errName.classList.toggle('show', !name);
+      errEmail.classList.toggle('show', !email || !email.includes('@'));
+      ok = !!(name && email && email.includes('@'));
+    }
+    if (step === 2) {
+      const domain = document.getElementById('f-domain').value;
+      const errDomain = document.getElementById('err-domain');
+      errDomain.classList.toggle('show', !domain);
+      ok = !!domain;
+    }
+    return ok;
+  }
+
+  function populateReview() {
+    const domain = document.getElementById('f-domain').value;
+    const customDomain = document.getElementById('f-custom-domain').value;
+    const displayDomain = domain === 'Other' ? customDomain || 'Other' : domain;
+    const location = document.querySelector('input[name="location"]:checked')?.value || 'All India';
+    const exclusions = document.getElementById('f-exclusions').value.trim();
+
+    document.getElementById('rev-name').textContent = document.getElementById('f-name').value;
+    document.getElementById('rev-email').textContent = document.getElementById('f-email').value;
+    document.getElementById('rev-domain').textContent = displayDomain;
+    document.getElementById('rev-count').textContent = trainerCount + ' TRAINERS';
+    document.getElementById('rev-location').textContent = location;
+    document.getElementById('rev-exclusions').textContent = exclusions
+      ? exclusions.split('\n').filter(Boolean).length + ' NAME(S) EXCLUDED'
+      : 'NONE';
+
+    const domain_val = document.getElementById('f-domain').value;
+    document.getElementById('form-subject').value =
+      `[Trainer Request] ${displayDomain} · ${trainerCount} trainers · ${location}`;
+  }
+
+  // ── FORM SUBMIT → SHOW WAITING SCREEN ──
+  document.getElementById('mission-form').addEventListener('submit', function(e) {
+    e.preventDefault();
+
+    const submitBtn = document.getElementById('submit-btn');
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'TRANSMITTING...';
+
+    const formData = new FormData(this);
+
+    fetch(this.action, {
+      method: 'POST',
+      body: formData,
+      headers: { 'Accept': 'application/json' }
+    }).then(response => {
+      // Show waiting screen regardless of response (form submitted)
+      showWaitingScreen();
+    }).catch(() => {
+      // Even on error, show the waiting screen (Formspree may still have received it)
+      showWaitingScreen();
+    });
+  });
+
+  function showWaitingScreen() {
+    const domain = document.getElementById('f-domain').value;
+    const customDomain = document.getElementById('f-custom-domain').value;
+    const displayDomain = domain === 'Other' ? customDomain || 'Other' : domain;
+
+    document.getElementById('w-domain').textContent = displayDomain.toUpperCase();
+    document.getElementById('w-count').textContent = trainerCount + ' TRAINERS';
+    document.getElementById('w-email').textContent = document.getElementById('f-email').value;
+
+    // Generate mission ID
+    const now = new Date();
+    const missionId = `RJP-${displayDomain.toUpperCase().replace(/\s+/g,'-').substring(0,6)}-${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}-${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}`;
+    document.getElementById('mission-id').textContent = `MISSION ID: ${missionId}`;
+
+    document.getElementById('screen-waiting').classList.add('visible');
+
+    // Animate stages sequentially
+    const stages = document.querySelectorAll('.m-stage');
+    stages.forEach((s, i) => {
+      s.classList.remove('active');
+      setTimeout(() => s.classList.add('active'), i * 2200);
+    });
+
+    // Ticker animation
+    let count = 0;
+    const target = Math.floor(Math.random() * 80) + 120;
+    const ticker = document.getElementById('ticker');
+    const interval = setInterval(() => {
+      count += Math.floor(Math.random() * 7) + 1;
+      if (count >= target) { count = target; clearInterval(interval); }
+      ticker.textContent = count;
+    }, 120);
+  }
+</script>
+</body>
+</html>
