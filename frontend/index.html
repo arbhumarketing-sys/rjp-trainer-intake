@@ -1,0 +1,1186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Trainer Sourcing Portal · RJP Infotek</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #f7f8fa;
+    --panel: #ffffff;
+    --line: #e4e7eb;
+    --line-soft: #eef0f3;
+    --ink: #1f2937;
+    --ink-2: #4b5563;
+    --ink-3: #6b7280;
+    --ink-4: #9ca3af;
+    --accent: #1d4ed8;
+    --accent-2: #1e40af;
+    --accent-soft: #eef2ff;
+    --good: #047857;
+    --good-soft: #ecfdf5;
+    --warn: #b45309;
+    --warn-soft: #fffbeb;
+    --bad: #b91c1c;
+    --bad-soft: #fef2f2;
+    --radius: 8px;
+    --radius-sm: 5px;
+    --shadow-sm: 0 1px 2px rgba(15,23,42,0.04);
+    --shadow-md: 0 4px 12px rgba(15,23,42,0.06);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  button { font-family: inherit; font-size: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+  input, select, textarea { font-family: inherit; font-size: inherit; color: inherit; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ============ LOGIN ============ */
+  .login-shade {
+    height: 100vh;
+    display: grid;
+    place-items: center;
+    background: var(--bg);
+  }
+  .login-card {
+    width: 380px;
+    padding: 32px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    box-shadow: var(--shadow-md);
+  }
+  .login-brand {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 22px;
+    font-weight: 600; font-size: 14px;
+  }
+  .login-mark {
+    width: 28px; height: 28px;
+    border-radius: 6px; background: var(--accent);
+    color: white;
+    display: grid; place-items: center;
+    font-weight: 700; font-size: 12px;
+  }
+  .login-card h2 { font-size: 19px; font-weight: 600; margin: 0 0 4px; }
+  .login-card .lead { color: var(--ink-3); font-size: 13px; margin: 0 0 22px; }
+
+  /* ============ TOPBAR ============ */
+  .topbar {
+    display: flex; justify-content: space-between; align-items: center;
+    height: 56px; padding: 0 24px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; z-index: 10;
+  }
+  .topbar-brand {
+    display: flex; align-items: center; gap: 12px;
+    font-weight: 600; font-size: 14px;
+  }
+  .topbar-brand .login-mark { width: 24px; height: 24px; }
+  .topbar-brand .sub { color: var(--ink-3); font-weight: 400; font-size: 13px; }
+  .topbar-actions { display: flex; gap: 8px; align-items: center; }
+  .topbar-clock { font-size: 12px; color: var(--ink-3); margin-right: 4px; }
+
+  /* ============ BUTTONS / INPUTS ============ */
+  .btn {
+    padding: 8px 14px; border-radius: var(--radius-sm);
+    border: 1px solid var(--line); background: var(--panel);
+    font-size: 13px; font-weight: 500;
+    transition: all 0.1s;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .btn:hover { border-color: var(--ink-3); }
+  .btn.primary {
+    background: var(--accent); color: white; border-color: var(--accent);
+    font-weight: 500;
+  }
+  .btn.primary:hover { background: var(--accent-2); border-color: var(--accent-2); }
+  .btn.primary:disabled { background: var(--ink-4); border-color: var(--ink-4); cursor: not-allowed; }
+  .btn.ghost { border-color: transparent; color: var(--ink-2); }
+  .btn.ghost:hover { background: var(--line-soft); }
+  .btn.danger:hover { color: var(--bad); border-color: var(--bad); }
+  .btn-wide { width: 100%; justify-content: center; padding: 10px; }
+
+  .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 18px; }
+  .field label.lbl {
+    font-weight: 500; font-size: 13px; color: var(--ink);
+  }
+  .field .hint {
+    font-size: 12px; color: var(--ink-3);
+    margin-top: -4px;
+  }
+  .field .err {
+    font-size: 12px; color: var(--bad);
+    display: none; margin-top: 2px;
+  }
+  .field.has-error .err { display: block; }
+  .field.has-error input, .field.has-error select, .field.has-error textarea {
+    border-color: var(--bad);
+  }
+  .field input, .field select, .field textarea {
+    padding: 9px 12px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    border-radius: var(--radius-sm);
+    font-size: 14px;
+    outline: none;
+    transition: border 0.08s;
+  }
+  .field input:focus, .field select:focus, .field textarea:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .field textarea { resize: vertical; min-height: 80px; line-height: 1.55; }
+
+  /* Chip group */
+  .chip-row { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip {
+    border: 1px solid var(--line);
+    background: var(--panel);
+    border-radius: 18px;
+    padding: 6px 12px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.08s;
+    user-select: none;
+  }
+  .chip:hover { border-color: var(--ink-3); }
+  .chip input { display: none; }
+  .chip.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 500; }
+
+  /* Counter (still nice for default headcount) */
+  .counter {
+    display: inline-flex; align-items: center; gap: 0;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+  }
+  .counter button {
+    width: 32px; height: 32px;
+    background: var(--panel); color: var(--ink-2);
+    font-size: 16px; line-height: 1;
+  }
+  .counter button:hover { background: var(--line-soft); }
+  .counter .val {
+    padding: 0 14px; min-width: 50px;
+    font-weight: 600; font-size: 15px;
+    text-align: center;
+  }
+
+  /* ============ MAIN LAYOUT (in-app) ============ */
+  .layout {
+    display: grid;
+    grid-template-columns: 260px 1fr;
+    height: calc(100vh - 56px);
+  }
+  .sidebar {
+    border-right: 1px solid var(--line);
+    background: var(--panel);
+    padding: 16px 12px;
+    overflow-y: auto;
+  }
+  .sidebar-section {
+    font-size: 11px; font-weight: 600; color: var(--ink-3);
+    text-transform: uppercase; letter-spacing: 0.05em;
+    padding: 4px 8px;
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 4px;
+  }
+  .sidebar-section .count {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px; font-weight: 500; color: var(--ink-3);
+  }
+  .brief-list { display: flex; flex-direction: column; gap: 2px; }
+  .brief-item {
+    padding: 9px 10px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background 0.08s;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .brief-item:hover { background: var(--line-soft); }
+  .brief-item.active { background: var(--accent-soft); }
+  .brief-item-title {
+    font-size: 13.5px; font-weight: 500;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .brief-item-meta {
+    display: flex; gap: 8px; align-items: center; font-size: 11.5px;
+    color: var(--ink-3);
+  }
+
+  .status-pill {
+    font-size: 10.5px; font-weight: 600;
+    padding: 1px 8px; border-radius: 10px;
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .status-queued    { background: var(--line-soft); color: var(--ink-3); }
+  .status-running, .status-scoring, .status-building   { background: var(--accent-soft); color: var(--accent); }
+  .status-complete  { background: var(--good-soft); color: var(--good); }
+  .status-failed    { background: var(--bad-soft); color: var(--bad); }
+
+  /* main canvas */
+  .main {
+    overflow-y: auto;
+    padding: 32px 28px;
+  }
+  .center {
+    max-width: 720px;
+    margin: 0 auto;
+  }
+
+  /* ============ STEP HEADER ============ */
+  .page-head { margin-bottom: 24px; }
+  .page-head h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .page-head .sub { color: var(--ink-3); font-size: 13.5px; }
+
+  .stepper {
+    display: flex; align-items: center; gap: 0;
+    padding: 16px 0 24px;
+    margin-bottom: 4px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .stepper-item {
+    display: flex; align-items: center; gap: 8px;
+    flex: 1;
+  }
+  .stepper-num {
+    width: 24px; height: 24px;
+    border-radius: 50%;
+    border: 1.5px solid var(--line);
+    color: var(--ink-3); background: var(--panel);
+    font-size: 12px; font-weight: 600;
+    display: grid; place-items: center;
+    flex-shrink: 0;
+  }
+  .stepper-label { font-size: 13px; color: var(--ink-3); }
+  .stepper-bar {
+    flex: 1; height: 1px; background: var(--line);
+  }
+  .stepper-item.done .stepper-num { background: var(--good); border-color: var(--good); color: white; }
+  .stepper-item.done .stepper-label { color: var(--good); }
+  .stepper-item.active .stepper-num { background: var(--accent); border-color: var(--accent); color: white; }
+  .stepper-item.active .stepper-label { color: var(--ink); font-weight: 500; }
+
+  /* ============ FORM PANEL ============ */
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-sm);
+    padding: 24px;
+    margin-bottom: 16px;
+  }
+  .panel h3 {
+    font-size: 14px; font-weight: 600; margin: 0 0 4px;
+    color: var(--ink);
+  }
+  .panel .panel-sub {
+    color: var(--ink-3); font-size: 12.5px; margin-bottom: 18px;
+  }
+  .panel-actions {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-top: 4px; padding-top: 18px; border-top: 1px solid var(--line-soft);
+  }
+
+  /* roles list */
+  .roles-grid {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    margin-bottom: 8px;
+  }
+  .roles-head, .role-row {
+    display: grid;
+    grid-template-columns: 32px 1.4fr 1fr 1fr 80px 32px;
+    gap: 0;
+    align-items: center;
+  }
+  .roles-head {
+    background: var(--bg);
+    border-bottom: 1px solid var(--line);
+    font-size: 11px; font-weight: 600; color: var(--ink-3);
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .roles-head > div, .role-row > div {
+    padding: 8px 10px;
+    border-right: 1px solid var(--line-soft);
+    min-width: 0;
+  }
+  .roles-head > div:last-child, .role-row > div:last-child { border-right: none; }
+  .role-row { border-bottom: 1px solid var(--line-soft); font-size: 13px; }
+  .role-row:last-child { border-bottom: none; }
+  .role-row input {
+    width: 100%; border: none; outline: none; background: transparent;
+    padding: 4px 0; font-size: 13px;
+  }
+  .role-row input:focus { color: var(--ink); }
+  .role-num { color: var(--ink-4); font-family: ui-monospace, monospace; font-size: 12px; text-align: center; }
+  .role-del {
+    color: var(--ink-4); border-radius: 3px;
+    width: 22px; height: 22px;
+    display: grid; place-items: center;
+    margin: 0 auto;
+  }
+  .role-del:hover { background: var(--bad-soft); color: var(--bad); }
+
+  /* ============ REVIEW ============ */
+  .review-grid {
+    display: grid; grid-template-columns: 140px 1fr;
+    gap: 8px 18px; padding: 4px 0;
+    font-size: 13.5px;
+  }
+  .review-grid > div:nth-child(odd) {
+    color: var(--ink-3); font-size: 12px;
+    text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600;
+    padding-top: 4px;
+  }
+
+  /* ============ PROGRESS BOARD ============ */
+  .stages {
+    display: flex; flex-direction: column; gap: 0;
+  }
+  .stage {
+    display: grid;
+    grid-template-columns: 36px 1fr 110px;
+    gap: 14px;
+    align-items: center;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .stage:last-child { border-bottom: none; }
+  .stage-num {
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    border: 1.5px solid var(--line);
+    background: var(--panel); color: var(--ink-4);
+    font-size: 12px; font-weight: 600;
+    display: grid; place-items: center;
+  }
+  .stage.done .stage-num { background: var(--good); border-color: var(--good); color: white; }
+  .stage.active .stage-num { background: var(--accent); border-color: var(--accent); color: white; }
+  .stage-info { display: flex; flex-direction: column; gap: 2px; }
+  .stage-name { font-size: 14px; font-weight: 500; color: var(--ink); }
+  .stage-sub { font-size: 12px; color: var(--ink-3); }
+  .stage-status {
+    text-align: right;
+    font-size: 11px; font-weight: 600;
+    color: var(--ink-3);
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .stage.done .stage-status { color: var(--good); }
+  .stage.active .stage-status { color: var(--accent); }
+
+  .log {
+    margin-top: 16px;
+    padding: 12px 14px;
+    background: var(--bg);
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-sm);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11.5px;
+    max-height: 220px; overflow-y: auto;
+    color: var(--ink-2); line-height: 1.6;
+    white-space: pre-wrap;
+  }
+  .log .ts { color: var(--ink-4); }
+  .log .err { color: var(--bad); }
+
+  .download-bar {
+    display: flex; align-items: center; gap: 12px;
+    padding: 16px 18px;
+    background: var(--good-soft);
+    border: 1px solid var(--good);
+    border-radius: var(--radius);
+    color: var(--good); font-weight: 500; font-size: 14px;
+  }
+  .download-bar .btn { margin-left: auto; }
+
+  .meta-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px 22px;
+    padding: 14px 18px;
+    background: var(--bg);
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius);
+    margin-bottom: 14px;
+  }
+  .meta-cell { display: flex; flex-direction: column; gap: 2px; }
+  .meta-label {
+    font-size: 11px; font-weight: 600; color: var(--ink-3);
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .meta-val { font-size: 13.5px; color: var(--ink); }
+
+  /* ============ TOAST ============ */
+  .toast {
+    position: fixed; bottom: 18px; right: 18px;
+    background: var(--ink); color: white;
+    padding: 10px 14px; border-radius: var(--radius);
+    font-size: 13px; box-shadow: var(--shadow-md);
+    opacity: 0; transform: translateY(8px);
+    transition: opacity 0.2s, transform 0.2s;
+    z-index: 200;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.error { background: var(--bad); }
+  .toast.success { background: var(--good); }
+
+  .empty-side { color: var(--ink-3); font-size: 12.5px; padding: 12px 8px; line-height: 1.55; }
+
+  @media (max-width: 800px) {
+    .layout { grid-template-columns: 1fr; }
+    .sidebar { display: none; }
+    .stepper-label { display: none; }
+    .meta-grid { grid-template-columns: 1fr 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div id="app"></div>
+<div class="toast" id="toast"></div>
+
+<script>
+/* ============================================================ */
+/* CONFIG                                                       */
+/* ============================================================ */
+const API_BASE = '';   // set to e.g. 'https://rjp-sourcing-portal.onrender.com' if frontend hosted separately
+const TOKEN_KEY = 'rjp_portal_token_v2';
+const REPO_CACHE = 'rjp_portal_repo_v2';
+
+const DOMAIN_OPTIONS = [
+  'AWS', 'Microsoft Azure', 'Google Cloud Platform', 'Salesforce',
+  'Backstage.io', 'Kubernetes', 'DevOps', 'Data Science / ML',
+  'Java', 'Python', 'Cybersecurity', 'SAP', 'Other (specify below)'
+];
+const LOCATIONS = ['All India', 'Bangalore', 'Mumbai', 'Delhi / NCR', 'Hyderabad', 'Pune', 'Chennai', 'Remote OK'];
+const OUTPUT_OPTIONS = [
+  { v: 'xlsx',  l: 'Excel (.xlsx)',  d: 'Default. Best for review and editing.' },
+  { v: 'sheet', l: 'Google Sheet',   d: 'Shared link, real-time collaboration.' },
+  { v: 'pdf',   l: 'PDF',            d: 'Read-only, easy to share externally.' },
+];
+
+/* ============================================================ */
+/* STATE                                                        */
+/* ============================================================ */
+let state = {
+  token: localStorage.getItem(TOKEN_KEY) || null,
+  briefs: [],
+  view: 'home',         // home | new | detail
+  step: 1,              // 1..4 inside new-brief flow
+  activeBriefId: null,
+  liveBrief: null,
+  pollTimer: null,
+  draft: defaultDraft(),
+};
+function defaultDraft() {
+  return {
+    operatorName: '', operatorEmail: '',
+    domain: '', customDomain: '',
+    roles: [{ title: '', skill: '', bucket: '', count: 5 }],
+    location: 'All India',
+    exclusions: '',
+    steering: '',
+    outputFormat: 'xlsx',
+    deadline: '',
+  };
+}
+
+/* ============================================================ */
+/* API                                                          */
+/* ============================================================ */
+async function api(method, path, body) {
+  const url = API_BASE + path;
+  const headers = { 'Content-Type': 'application/json' };
+  if (state.token) headers['Authorization'] = 'Bearer ' + state.token;
+  const opts = { method, headers };
+  if (body !== undefined) opts.body = JSON.stringify(body);
+  let res;
+  try { res = await fetch(url, opts); }
+  catch (e) { throw new Error('Cannot reach the server. Is it running? ' + e.message); }
+  if (res.status === 401) { logout(); throw new Error('Session expired — sign in again.'); }
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error('Server error (' + res.status + '): ' + text.slice(0, 200));
+  }
+  const ct = res.headers.get('Content-Type') || '';
+  return ct.includes('application/json') ? res.json() : res;
+}
+
+async function login(password) {
+  const r = await api('POST', '/api/auth/login', { password });
+  if (r && r.token) {
+    state.token = r.token;
+    localStorage.setItem(TOKEN_KEY, state.token);
+    return true;
+  }
+  return false;
+}
+function logout() {
+  localStorage.removeItem(TOKEN_KEY);
+  state.token = null; state.briefs = []; state.view = 'home'; state.activeBriefId = null;
+  stopPolling();
+  render();
+}
+
+async function loadBriefs() {
+  try {
+    const data = await api('GET', '/api/briefs');
+    state.briefs = data.briefs || [];
+    localStorage.setItem(REPO_CACHE, JSON.stringify(state.briefs));
+  } catch (e) {
+    const cached = localStorage.getItem(REPO_CACHE);
+    if (cached) state.briefs = JSON.parse(cached);
+    toast(e.message, 'error');
+  }
+}
+
+async function getBrief(id) {
+  return (await api('GET', '/api/briefs/' + encodeURIComponent(id))).brief;
+}
+
+async function pollActive() {
+  if (!state.activeBriefId) return;
+  try {
+    const b = await getBrief(state.activeBriefId);
+    state.liveBrief = b;
+    const ix = state.briefs.findIndex(x => x.id === b.id);
+    if (ix >= 0) state.briefs[ix] = b; else state.briefs.unshift(b);
+    if (state.view === 'detail') renderMain();
+    renderSidebar();
+    if (b.status === 'complete' || b.status === 'failed') stopPolling();
+  } catch (e) { /* keep polling */ }
+}
+function startPolling() { stopPolling(); pollActive(); state.pollTimer = setInterval(pollActive, 2500); }
+function stopPolling() { if (state.pollTimer) clearInterval(state.pollTimer); state.pollTimer = null; }
+
+/* ============================================================ */
+/* RENDER ROOT                                                  */
+/* ============================================================ */
+function render() {
+  const root = document.getElementById('app');
+  if (!state.token) {
+    root.innerHTML = renderLogin();
+    wireLogin();
+    return;
+  }
+  root.innerHTML = renderShell();
+  wireShell();
+  renderSidebar();
+  renderMain();
+}
+
+/* ---------- LOGIN ---------- */
+function renderLogin() {
+  return `
+    <div class="login-shade">
+      <div class="login-card">
+        <div class="login-brand">
+          <div class="login-mark">RJ</div>
+          <span>Trainer Sourcing Portal</span>
+        </div>
+        <h2>Sign in</h2>
+        <p class="lead">RJP Infotek team. Use the shared password from Vijay or Ramesh.</p>
+        <form id="login-form">
+          <div class="field"><label class="lbl">Shared password</label>
+            <input type="password" id="pwd" autofocus required />
+            <div class="err" id="login-err">Wrong password.</div>
+          </div>
+          <button class="btn primary btn-wide" type="submit">Sign in</button>
+        </form>
+      </div>
+    </div>
+  `;
+}
+function wireLogin() {
+  document.getElementById('login-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const pwd = document.getElementById('pwd').value;
+    const errBox = document.querySelector('#login-form .field');
+    errBox.classList.remove('has-error');
+    try {
+      const ok = await login(pwd);
+      if (!ok) { errBox.classList.add('has-error'); return; }
+      await loadBriefs();
+      render();
+    } catch (e) {
+      errBox.classList.add('has-error');
+      document.getElementById('login-err').textContent = e.message;
+    }
+  });
+}
+
+/* ---------- SHELL ---------- */
+function renderShell() {
+  return `
+    <header class="topbar">
+      <div class="topbar-brand">
+        <div class="login-mark">RJ</div>
+        <span>Trainer Sourcing Portal</span>
+        <span class="sub">· RJP Infotek</span>
+      </div>
+      <div class="topbar-actions">
+        <span class="topbar-clock" id="clock"></span>
+        <button class="btn ghost" id="btn-home">Repository</button>
+        <button class="btn ghost" id="btn-logout">Sign out</button>
+        <button class="btn primary" id="btn-new">+ New brief</button>
+      </div>
+    </header>
+    <div class="layout">
+      <aside class="sidebar">
+        <div class="sidebar-section"><span>Past briefs</span><span class="count" id="sb-count">—</span></div>
+        <div class="brief-list" id="sb-list"></div>
+      </aside>
+      <main class="main" id="main"></main>
+    </div>
+  `;
+}
+function wireShell() {
+  document.getElementById('btn-home').addEventListener('click', () => { state.view = 'home'; state.activeBriefId = null; stopPolling(); renderMain(); renderSidebar(); });
+  document.getElementById('btn-logout').addEventListener('click', logout);
+  document.getElementById('btn-new').addEventListener('click', () => { state.view = 'new'; state.step = 1; state.draft = defaultDraft(); renderMain(); renderSidebar(); });
+  startClock();
+}
+function startClock() {
+  const c = document.getElementById('clock');
+  if (!c) return;
+  const tick = () => {
+    const d = new Date();
+    c.textContent = d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) + ' IST';
+  };
+  tick(); setInterval(tick, 30000);
+}
+
+/* ---------- SIDEBAR ---------- */
+function renderSidebar() {
+  const list = document.getElementById('sb-list');
+  const count = document.getElementById('sb-count');
+  if (!list) return;
+  count.textContent = state.briefs.length;
+  if (!state.briefs.length) {
+    list.innerHTML = '<div class="empty-side">No briefs yet. Click <strong>+ New brief</strong> to start.</div>';
+    return;
+  }
+  list.innerHTML = state.briefs.map(b => {
+    const isActive = b.id === state.activeBriefId;
+    const title = (b.title || '(untitled)').slice(0, 80);
+    const sub = (b.domain || '—') + ' · ' + ((b.roles || []).length) + ' role' + ((b.roles || []).length === 1 ? '' : 's');
+    return `<div class="brief-item ${isActive ? 'active' : ''}" data-id="${esc(b.id)}">
+      <span class="brief-item-title">${esc(title)}</span>
+      <span class="brief-item-meta">
+        <span>${esc(sub)}</span>
+        <span class="status-pill status-${b.status || 'queued'}">${b.status || 'queued'}</span>
+      </span>
+    </div>`;
+  }).join('');
+  list.querySelectorAll('.brief-item').forEach(el => {
+    el.addEventListener('click', () => {
+      state.activeBriefId = el.dataset.id;
+      state.view = 'detail';
+      startPolling();
+      renderMain(); renderSidebar();
+    });
+  });
+}
+
+/* ---------- MAIN ---------- */
+function renderMain() {
+  const m = document.getElementById('main');
+  if (!m) return;
+  if (state.view === 'new') return renderWizard(m);
+  if (state.view === 'detail' && state.activeBriefId) return renderDetail(m);
+  return renderHome(m);
+}
+
+function renderHome(m) {
+  m.innerHTML = `
+    <div class="center">
+      <div class="page-head">
+        <h1>Welcome back</h1>
+        <div class="sub">Pick a past brief from the left, or start a new sourcing request.</div>
+      </div>
+      <div class="panel">
+        <h3>What this portal does</h3>
+        <p style="margin:0 0 14px;color:var(--ink-2);font-size:13.5px;">Submit a brief — domain, roles, location, anything specific you want — and the sourcing pipeline runs automatically. Watch progress live, download the result as Excel, Sheet, or PDF when it's ready. Past briefs stay in the repository on the left.</p>
+        <button class="btn primary" id="btn-home-new">+ New sourcing brief</button>
+      </div>
+    </div>`;
+  document.getElementById('btn-home-new').addEventListener('click', () => { state.view = 'new'; state.step = 1; state.draft = defaultDraft(); renderMain(); });
+}
+
+/* ============================================================ */
+/* WIZARD                                                       */
+/* ============================================================ */
+function renderWizard(m) {
+  const labels = ['Operator', 'Domain & roles', 'Location & specifics', 'Review'];
+  const stepEls = labels.map((lbl, i) => {
+    const n = i + 1;
+    const cls = n === state.step ? 'active' : (n < state.step ? 'done' : '');
+    return `
+      <div class="stepper-item ${cls}">
+        <div class="stepper-num">${cls === 'done' ? '✓' : n}</div>
+        <div class="stepper-label">${lbl}</div>
+      </div>
+      ${n < labels.length ? '<div class="stepper-bar"></div>' : ''}
+    `;
+  }).join('');
+
+  m.innerHTML = `
+    <div class="center">
+      <div class="page-head">
+        <h1>New sourcing brief</h1>
+        <div class="sub">Fill in what you need. The pipeline runs automatically — no waiting on email approvals.</div>
+      </div>
+      <div class="stepper">${stepEls}</div>
+      <div id="wizard-body"></div>
+    </div>
+  `;
+  if (state.step === 1) renderStep1();
+  else if (state.step === 2) renderStep2();
+  else if (state.step === 3) renderStep3();
+  else if (state.step === 4) renderStep4();
+}
+
+function navButtons(canNext, nextLabel) {
+  return `
+    <div class="panel-actions">
+      <button class="btn" id="btn-back" ${state.step === 1 ? 'style="visibility:hidden;"' : ''}>← Back</button>
+      <button class="btn primary" id="btn-next" ${!canNext ? 'disabled' : ''}>${nextLabel || 'Next →'}</button>
+    </div>
+  `;
+}
+function wireNav() {
+  const back = document.getElementById('btn-back');
+  if (back) back.addEventListener('click', () => { state.step--; renderWizard(document.getElementById('main')); });
+}
+
+/* Step 1 — operator */
+function renderStep1() {
+  const d = state.draft;
+  document.getElementById('wizard-body').innerHTML = `
+    <div class="panel">
+      <h3>Who's submitting this?</h3>
+      <div class="panel-sub">We use this to label the brief in the repository and on the output file.</div>
+
+      <div class="field">
+        <label class="lbl">Your name</label>
+        <input id="op-name" value="${esc(d.operatorName)}" placeholder="e.g. Vijay Sharma" />
+        <div class="err">Please enter your name.</div>
+      </div>
+      <div class="field">
+        <label class="lbl">Your email</label>
+        <input id="op-email" type="email" value="${esc(d.operatorEmail)}" placeholder="you@rjpinfotek.com" />
+        <div class="err">Please enter a valid email.</div>
+      </div>
+
+      ${navButtons(true)}
+    </div>
+  `;
+  wireNav();
+  document.getElementById('btn-next').addEventListener('click', () => {
+    const name = document.getElementById('op-name').value.trim();
+    const email = document.getElementById('op-email').value.trim();
+    let ok = true;
+    if (!name) { document.getElementById('op-name').closest('.field').classList.add('has-error'); ok = false; }
+    if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { document.getElementById('op-email').closest('.field').classList.add('has-error'); ok = false; }
+    if (!ok) return;
+    state.draft.operatorName = name;
+    state.draft.operatorEmail = email;
+    state.step = 2;
+    renderWizard(document.getElementById('main'));
+  });
+}
+
+/* Step 2 — domain + roles */
+function renderStep2() {
+  const d = state.draft;
+  document.getElementById('wizard-body').innerHTML = `
+    <div class="panel">
+      <h3>Domain & roles</h3>
+      <div class="panel-sub">Pick the technology stack and list one or more role lines. Each role can have its own headcount.</div>
+
+      <div class="field">
+        <label class="lbl">Primary domain</label>
+        <select id="f-domain">
+          <option value="">— Select domain —</option>
+          ${DOMAIN_OPTIONS.map(o => `<option value="${esc(o)}" ${d.domain === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}
+        </select>
+        <div class="err">Please pick a domain.</div>
+      </div>
+
+      <div class="field" id="custom-wrap" style="display:${(d.domain && d.domain.startsWith('Other')) ? 'flex' : 'none'};">
+        <label class="lbl">Specify domain</label>
+        <input id="f-custom" value="${esc(d.customDomain)}" placeholder="e.g. SAP FICO, React Native" />
+      </div>
+
+      <div class="field">
+        <label class="lbl">Roles required</label>
+        <div class="hint">Add one row per role. Most briefs have 1–3 rows.</div>
+        <div class="roles-grid">
+          <div class="roles-head">
+            <div></div>
+            <div>Role title</div>
+            <div>Must-have skill</div>
+            <div>Bucket</div>
+            <div>Count</div>
+            <div></div>
+          </div>
+          <div id="roles-rows"></div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:6px;">
+          <button class="btn" id="btn-add-role" type="button">+ Add another role</button>
+          <span class="hint" style="margin:0;">Use the Specific direction box on the next step for any role-level nuance not captured by these columns.</span>
+        </div>
+      </div>
+
+      ${navButtons(true)}
+    </div>
+  `;
+  wireNav();
+  // domain change
+  document.getElementById('f-domain').addEventListener('change', e => {
+    state.draft.domain = e.target.value;
+    document.getElementById('custom-wrap').style.display = e.target.value.startsWith('Other') ? 'flex' : 'none';
+  });
+
+  // render roles
+  const rolesDiv = document.getElementById('roles-rows');
+  function paintRoles() {
+    rolesDiv.innerHTML = state.draft.roles.map((r, i) => `
+      <div class="role-row" data-i="${i}">
+        <div class="role-num">${i + 1}</div>
+        <div><input data-k="title" value="${esc(r.title)}" placeholder="e.g. Salesforce Admin Trainer" /></div>
+        <div><input data-k="skill" value="${esc(r.skill)}" placeholder="e.g. Sales Cloud + Lightning" /></div>
+        <div><input data-k="bucket" value="${esc(r.bucket)}" placeholder="Functional / Technical / etc." /></div>
+        <div><input data-k="count" type="number" min="1" value="${r.count}" /></div>
+        <div><button class="role-del" type="button" title="Remove">×</button></div>
+      </div>
+    `).join('');
+    rolesDiv.querySelectorAll('input').forEach(inp => {
+      inp.addEventListener('input', e => {
+        const i = parseInt(e.target.closest('.role-row').dataset.i, 10);
+        const k = e.target.dataset.k;
+        if (k === 'count') state.draft.roles[i][k] = parseInt(e.target.value, 10) || 1;
+        else state.draft.roles[i][k] = e.target.value;
+      });
+    });
+    rolesDiv.querySelectorAll('.role-del').forEach(b => b.addEventListener('click', e => {
+      const i = parseInt(e.target.closest('.role-row').dataset.i, 10);
+      if (state.draft.roles.length === 1) { toast('Keep at least one role row.', 'error'); return; }
+      state.draft.roles.splice(i, 1);
+      paintRoles();
+    }));
+  }
+  paintRoles();
+  document.getElementById('btn-add-role').addEventListener('click', () => {
+    state.draft.roles.push({ title: '', skill: '', bucket: '', count: 5 });
+    paintRoles();
+  });
+
+  document.getElementById('btn-next').addEventListener('click', () => {
+    let ok = true;
+    if (!state.draft.domain) { document.getElementById('f-domain').closest('.field').classList.add('has-error'); ok = false; }
+    if (state.draft.domain.startsWith('Other')) {
+      state.draft.customDomain = document.getElementById('f-custom').value.trim();
+    }
+    const validRoles = state.draft.roles.filter(r => r.title.trim());
+    if (!validRoles.length) { toast('Add at least one role with a title.', 'error'); ok = false; }
+    if (!ok) return;
+    state.draft.roles = validRoles.map(r => ({ ...r, count: r.count || 1 }));
+    state.step = 3;
+    renderWizard(document.getElementById('main'));
+  });
+}
+
+/* Step 3 — location, exclusions, steering, output format */
+function renderStep3() {
+  const d = state.draft;
+  document.getElementById('wizard-body').innerHTML = `
+    <div class="panel">
+      <h3>Location & specifics</h3>
+      <div class="panel-sub">Refine where the trainers should be, who to skip, anything specific you want, and how you'd like the output.</div>
+
+      <div class="field">
+        <label class="lbl">Location preference</label>
+        <div class="chip-row" id="loc-chips">
+          ${LOCATIONS.map(l => `<label class="chip ${d.location === l ? 'on' : ''}">
+            <input type="radio" name="loc" value="${esc(l)}" ${d.location === l ? 'checked' : ''}> ${esc(l)}
+          </label>`).join('')}
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="lbl">Trainers to exclude (optional)</label>
+        <div class="hint">Paste names of trainers you already have. One per line.</div>
+        <textarea id="f-exclusions" rows="4" placeholder="e.g.&#10;Ram Kumar&#10;Rahul Patel">${esc(d.exclusions)}</textarea>
+      </div>
+
+      <div class="field">
+        <label class="lbl">Specific direction (optional)</label>
+        <div class="hint">Anything you want done differently from the standard template — what to prioritise, what to skip, how to organise the output. Free text.</div>
+        <textarea id="f-steering" rows="5" placeholder="Examples:&#10;• Prioritise Salesforce Industries / OmniStudio over generic admin&#10;• Sort the output by years of experience descending&#10;• Group results by city in separate sheets&#10;• Skip InfraCloud — already engaged&#10;• Include only profiles with explicit certification">${esc(d.steering)}</textarea>
+      </div>
+
+      <div class="field">
+        <label class="lbl">Output format</label>
+        <div class="chip-row">
+          ${OUTPUT_OPTIONS.map(o => `<label class="chip ${d.outputFormat === o.v ? 'on' : ''}" title="${esc(o.d)}">
+            <input type="radio" name="output" value="${esc(o.v)}" ${d.outputFormat === o.v ? 'checked' : ''}> ${esc(o.l)}
+          </label>`).join('')}
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="lbl">Deadline (optional)</label>
+        <input id="f-deadline" type="date" value="${esc(d.deadline)}" />
+      </div>
+
+      ${navButtons(true)}
+    </div>
+  `;
+  wireNav();
+  // chip wiring
+  document.querySelectorAll('#loc-chips .chip').forEach(c => {
+    c.addEventListener('click', () => {
+      document.querySelectorAll('#loc-chips .chip').forEach(x => x.classList.remove('on'));
+      c.classList.add('on');
+      state.draft.location = c.querySelector('input').value;
+    });
+  });
+  document.querySelectorAll('.chip input[name="output"]').forEach(inp => {
+    inp.addEventListener('change', e => {
+      document.querySelectorAll('.chip input[name="output"]').forEach(x => x.closest('.chip').classList.remove('on'));
+      e.target.closest('.chip').classList.add('on');
+      state.draft.outputFormat = e.target.value;
+    });
+  });
+
+  document.getElementById('btn-next').addEventListener('click', () => {
+    state.draft.exclusions = document.getElementById('f-exclusions').value;
+    state.draft.steering = document.getElementById('f-steering').value;
+    state.draft.deadline = document.getElementById('f-deadline').value;
+    state.step = 4;
+    renderWizard(document.getElementById('main'));
+  });
+}
+
+/* Step 4 — review + submit */
+function renderStep4() {
+  const d = state.draft;
+  const totalCount = d.roles.reduce((a, r) => a + (r.count || 0), 0);
+  const domainShown = d.domain.startsWith('Other') ? (d.customDomain || 'Other (unspecified)') : d.domain;
+
+  document.getElementById('wizard-body').innerHTML = `
+    <div class="panel">
+      <h3>Review & submit</h3>
+      <div class="panel-sub">Quick check before the pipeline kicks off. Everything's editable — go back if anything needs to change.</div>
+
+      <div class="review-grid">
+        <div>Operator</div><div>${esc(d.operatorName)} · ${esc(d.operatorEmail)}</div>
+        <div>Domain</div><div>${esc(domainShown)}</div>
+        <div>Total headcount</div><div>${totalCount} across ${d.roles.length} role line${d.roles.length === 1 ? '' : 's'}</div>
+        <div>Roles</div><div>${d.roles.map((r, i) => `${i + 1}. ${esc(r.title)} (×${r.count}${r.skill ? ' · ' + esc(r.skill) : ''}${r.bucket ? ' · ' + esc(r.bucket) : ''})`).join('<br/>')}</div>
+        <div>Location</div><div>${esc(d.location)}</div>
+        <div>Output</div><div>${esc((OUTPUT_OPTIONS.find(o => o.v === d.outputFormat) || {}).l || d.outputFormat)}</div>
+        <div>Deadline</div><div>${esc(d.deadline) || '—'}</div>
+        <div>Exclusions</div><div>${d.exclusions ? esc(d.exclusions).replace(/\n/g, '<br/>') : '—'}</div>
+        <div>Specific direction</div><div>${d.steering ? esc(d.steering).replace(/\n/g, '<br/>') : '—'}</div>
+      </div>
+
+      <div class="panel-actions">
+        <button class="btn" id="btn-back">← Back</button>
+        <button class="btn primary" id="btn-submit">Submit & start sourcing</button>
+      </div>
+    </div>
+  `;
+  wireNav();
+  document.getElementById('btn-submit').addEventListener('click', submitWizard);
+}
+
+async function submitWizard() {
+  const d = state.draft;
+  const btn = document.getElementById('btn-submit');
+  btn.disabled = true; btn.textContent = 'Submitting…';
+  try {
+    const payload = {
+      title: d.roles.map(r => r.title).filter(Boolean).slice(0, 2).join(' + ') + ' — ' + (d.domain.startsWith('Other') ? d.customDomain : d.domain),
+      domain: d.domain.startsWith('Other') ? d.customDomain : d.domain,
+      geo: d.location,
+      deadline: d.deadline,
+      outputFormat: d.outputFormat,
+      roles: d.roles,
+      steering: d.steering,
+      exclusions: d.exclusions,
+      operator: { name: d.operatorName, email: d.operatorEmail },
+    };
+    const r = await api('POST', '/api/briefs', payload);
+    await loadBriefs();
+    state.activeBriefId = r.brief.id;
+    state.view = 'detail';
+    state.step = 1; state.draft = defaultDraft();
+    startPolling();
+    renderMain(); renderSidebar();
+    toast('Brief submitted — pipeline running.', 'success');
+  } catch (e) {
+    toast(e.message, 'error');
+    btn.disabled = false; btn.textContent = 'Submit & start sourcing';
+  }
+}
+
+/* ============================================================ */
+/* DETAIL                                                       */
+/* ============================================================ */
+function renderDetail(m) {
+  const b = state.liveBrief && state.liveBrief.id === state.activeBriefId
+    ? state.liveBrief
+    : state.briefs.find(x => x.id === state.activeBriefId);
+  if (!b) {
+    m.innerHTML = '<div class="center"><div class="page-head"><h1>Loading…</h1></div></div>';
+    return;
+  }
+  const status = b.status || 'queued';
+  const stages = [
+    { key: 'queued',    name: 'Queued',     sub: 'Brief accepted' },
+    { key: 'running',   name: 'Discovery',  sub: 'Scanning LinkedIn, UrbanPro, YouTube and more' },
+    { key: 'scoring',   name: 'Scoring',    sub: 'Applying signal & rubric scoring' },
+    { key: 'building',  name: 'Packaging',  sub: 'Building the output file' },
+    { key: 'complete',  name: 'Done',       sub: 'Output ready to download' },
+  ];
+  const ix = stages.findIndex(s => s.key === status);
+
+  const counts = b.counts || {};
+  const meta = (key) => {
+    if (key === 'running' && counts.discovered) return counts.discovered + ' discovered';
+    if (key === 'scoring' && counts.scored) return counts.scored + ' scored';
+    if (key === 'building' && counts.rows) return counts.rows + ' rows';
+    if (key === 'complete' && b.outputFile) return 'file ready';
+    return '';
+  };
+
+  const downloadHTML = (status === 'complete')
+    ? `<div class="download-bar">
+         <span>✓ Output ready</span>
+         <a class="btn primary" href="${API_BASE}/api/briefs/${encodeURIComponent(b.id)}/output?token=${encodeURIComponent(state.token)}" download>Download ${esc(b.outputFormat || 'xlsx').toUpperCase()}</a>
+       </div>`
+    : (status === 'failed'
+        ? `<div class="download-bar" style="background:var(--bad-soft);color:var(--bad);border-color:var(--bad);">
+             <span>✗ Pipeline stopped: ${esc(b.error || 'unknown error')}</span>
+             <button class="btn" id="btn-retry" style="margin-left:auto;">Retry</button>
+           </div>`
+        : '');
+
+  m.innerHTML = `
+    <div class="center">
+      <div class="page-head">
+        <h1>${esc(b.title || '(untitled brief)')}</h1>
+        <div class="sub">Submitted ${b.createdAt ? new Date(b.createdAt).toLocaleString('en-IN') : 'just now'} · ID <span style="font-family:monospace;">${esc(b.id)}</span></div>
+      </div>
+
+      <div class="meta-grid">
+        <div class="meta-cell"><span class="meta-label">Domain</span><span class="meta-val">${esc(b.domain || '—')}</span></div>
+        <div class="meta-cell"><span class="meta-label">Location</span><span class="meta-val">${esc(b.geo || '—')}</span></div>
+        <div class="meta-cell"><span class="meta-label">Output</span><span class="meta-val">${esc((b.outputFormat || 'xlsx').toUpperCase())}</span></div>
+        <div class="meta-cell"><span class="meta-label">Roles</span><span class="meta-val">${(b.roles || []).length}</span></div>
+        <div class="meta-cell"><span class="meta-label">Total headcount</span><span class="meta-val">${(b.roles || []).reduce((a, r) => a + (r.count || 0), 0)}</span></div>
+        <div class="meta-cell"><span class="meta-label">Status</span><span class="meta-val"><span class="status-pill status-${status}">${status}</span></span></div>
+      </div>
+
+      <div class="panel">
+        <h3>Pipeline progress</h3>
+        <div class="panel-sub">${status === 'complete' ? 'Done.' : (status === 'failed' ? 'Stopped on error.' : 'Live — refreshes every 2.5 seconds.')}</div>
+        <div class="stages">
+          ${stages.map((s, i) => {
+            const cls = (status === 'failed' && i === Math.max(0, ix)) ? 'active' : (i < ix ? 'done' : (i === ix ? 'active' : ''));
+            const statusLabel = i < ix ? 'DONE' : (i === ix ? (status === 'failed' ? 'FAILED' : 'IN PROGRESS') : 'PENDING');
+            return `<div class="stage ${cls}">
+              <div class="stage-num">${i < ix ? '✓' : i + 1}</div>
+              <div class="stage-info">
+                <span class="stage-name">${s.name}</span>
+                <span class="stage-sub">${s.sub}${meta(s.key) ? ' · ' + meta(s.key) : ''}</span>
+              </div>
+              <div class="stage-status">${statusLabel}</div>
+            </div>`;
+          }).join('')}
+        </div>
+        <div class="log">${(b.log || []).map(l =>
+          `<div><span class="ts">${esc((l.ts || '').slice(11, 19))}</span> <span class="${l.kind === 'err' ? 'err' : ''}">${esc(l.msg || '')}</span></div>`
+        ).join('') || '<div><span class="ts">--:--:--</span> Waiting for first event…</div>'}</div>
+      </div>
+
+      ${downloadHTML}
+
+      ${b.steering ? `<div class="panel" style="margin-top:14px;">
+        <h3>Specific direction</h3>
+        <div style="font-size:13.5px;color:var(--ink-2);white-space:pre-wrap;">${esc(b.steering)}</div>
+      </div>` : ''}
+
+      <div class="panel" style="margin-top:14px;">
+        <h3>Roles in this brief</h3>
+        ${(b.roles || []).map((r, i) => `
+          <div style="padding:10px 0;border-bottom:1px solid var(--line-soft);font-size:13.5px;display:grid;grid-template-columns:24px 1.4fr 1fr 1fr 60px;gap:10px;">
+            <span style="color:var(--ink-3);font-family:monospace;">${i + 1}.</span>
+            <span style="font-weight:500;">${esc(r.title || '—')}</span>
+            <span style="color:var(--ink-3);">${esc(r.skill || '')}</span>
+            <span style="color:var(--ink-3);">${esc(r.bucket || '')}</span>
+            <span style="font-family:monospace;text-align:right;">×${r.count || 1}</span>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+  // auto-scroll log
+  const logBox = m.querySelector('.log');
+  if (logBox) logBox.scrollTop = logBox.scrollHeight;
+  // retry
+  const rtb = document.getElementById('btn-retry');
+  if (rtb) rtb.addEventListener('click', async () => {
+    try {
+      await api('POST', '/api/briefs/' + encodeURIComponent(b.id) + '/retry');
+      await loadBriefs();
+      startPolling();
+      renderMain(); renderSidebar();
+      toast('Retrying…', 'success');
+    } catch (e) { toast(e.message, 'error'); }
+  });
+}
+
+/* ============================================================ */
+/* UTILS                                                        */
+/* ============================================================ */
+function esc(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+let toastTimer = null;
+function toast(msg, kind) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show ' + (kind || '');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.className = 'toast', 3200);
+}
+
+/* ============================================================ */
+/* BOOT                                                         */
+/* ============================================================ */
+(async function init() {
+  if (state.token) {
+    try { await loadBriefs(); } catch (e) {}
+  }
+  render();
+})();
+</script>
+</body>
+</html>

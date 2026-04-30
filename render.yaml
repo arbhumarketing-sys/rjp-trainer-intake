@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: rjp-trainer-intake-server
+    runtime: node
+    plan: free
+    region: singapore
+    rootDir: server
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /healthz
+    envVars:
+      - key: APIFY_TOKEN
+        sync: false              # paste in Render dashboard at deploy time
+      - key: SHARED_PASSWORD
+        sync: false              # pick one the RJP team can remember
+      - key: JWT_SECRET
+        generateValue: true      # Render auto-generates a strong secret
+      - key: NODE_VERSION
+        value: "20"
+      - key: ALLOWED_ORIGINS
+        value: "*"               # tighten to your Netlify URL later
+      - key: DATA_DIR
+        value: /data/briefs
+      - key: OUTPUT_DIR
+        value: /data/outputs
+    disk:
+      name: rjp-data
+      mountPath: /data
+      sizeGB: 1
