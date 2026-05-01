@@ -85,6 +85,49 @@ function logAndSave(briefId, msg, kind = 'info', meta = null) {
 
 function elapsedSec(t0) { return ((Date.now() - t0) / 1000).toFixed(1); }
 
+/* ---------- Retry helper ---------- */
+// Wrap external calls so a transient blip (network jitter, Apify worker stall,
+// Claude CLI rate-limit window) doesn't downgrade a brief from "8 trainers"
+// to "0 trainers, looks broken". The tier's outer try/catch still returns []
+// on terminal failure, so this just buys more chances of a non-empty result
+// before giving up — graceful degradation preserved.
+//
+// Status mapping for the Claude CLI client (anthropic-claude-cli.js):
+//   401 = auth/login required        → DON'T retry (will fail forever)
+//   400 = bad request                 → DON'T retry
+//   500 = generic CLI/transport error → retry (often a rate-limit window edge)
+//   502 = CLI returned non-JSON       → retry (likely flake)
+//   504 = subprocess timeout          → retry (network or Claude API slow)
+// Apify errors from apify-client are HTTP errors; treat 4xx (except 408/429)
+// as terminal and everything else as transient.
+async function withRetry(fn, opts = {}) {
+  const maxAttempts = opts.maxAttempts || 3;
+  const baseDelayMs = opts.baseDelayMs || 2000;
+  const onRetry = opts.onRetry || (() => {});
+  const isRetryable = opts.isRetryable || ((err) => {
+    const s = err && err.status;
+    if (s == null) return true;             // network/unknown — assume transient
+    if (s === 408 || s === 429) return true; // request timeout / rate limit
+    if (s >= 400 && s < 500) return false;   // other 4xx — terminal
+    return true;                              // 5xx and unknown — transient
+  });
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn(attempt);
+    } catch (err) {
+      lastErr = err;
+      if (attempt === maxAttempts || !isRetryable(err)) throw err;
+      const expDelay = baseDelayMs * Math.pow(2, attempt - 1);
+      const jitter = Math.random() * baseDelayMs * 0.5;
+      const delay = expDelay + jitter;
+      try { onRetry(attempt, delay, err); } catch (_) { /* logger must never throw */ }
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+  throw lastErr;
+}
+
 /* ---------- Brief normalization ---------- */
 function normalizeBrief(brief) {
   // Backward-compat with v3 briefs that only have domain + roles.
@@ -199,7 +242,7 @@ function sanitizeQueryTerm(s) {
 }
 
 /* ---------- Apify: Google search ---------- */
-async function runGoogleQuery(client, q) {
+async function runGoogleQuery(client, q, briefId) {
   if (process.env.MOCK_APIFY === '1') return mockGoogle(q);
   try {
     const input = {
@@ -209,11 +252,24 @@ async function runGoogleQuery(client, q) {
       scrapingTool: 'raw-http',
       requestTimeoutSecs: 25,
     };
-    const run = await client.actor(APIFY_GOOGLE_ACTOR).call(input, { waitSecs: 150 });
+    const run = await withRetry(
+      () => client.actor(APIFY_GOOGLE_ACTOR).call(input, { waitSecs: 150 }),
+      {
+        maxAttempts: 3,
+        baseDelayMs: 2000,
+        onRetry: (attempt, delay, err) => {
+          if (briefId) logAndSave(briefId, `[L1.3 retry] Apify Google attempt ${attempt} failed (${(err.message || 'unknown').slice(0, 80)}); retrying in ${Math.round(delay / 1000)}s`, 'warn');
+        },
+      }
+    );
     if (!run || !run.defaultDatasetId) return [];
-    const ds = await client.dataset(run.defaultDatasetId).listItems();
+    const ds = await withRetry(
+      () => client.dataset(run.defaultDatasetId).listItems(),
+      { maxAttempts: 3, baseDelayMs: 1500 }
+    );
     return (ds.items || []).map(it => ({ ...it, _q: q }));
   } catch (e) {
+    if (briefId) logAndSave(briefId, `[L1.3] Apify Google gave up after retries: ${(e.message || 'unknown').slice(0, 100)}`, 'warn');
     console.warn('[google query failed]', q.query.slice(0, 60), '→', e.message);
     return [];
   }
@@ -259,7 +315,7 @@ function canonLinkedinUrl(u) {
   return s;
 }
 
-async function enrichLinkedIn(client, urls) {
+async function enrichLinkedIn(client, urls, briefId) {
   if (process.env.MOCK_APIFY === '1' || !urls.length) {
     // Mock: derive location from URL hint. Real harvestapi returns the LinkedIn truth.
     return urls.map(u => {
@@ -283,9 +339,21 @@ async function enrichLinkedIn(client, urls) {
       urls,
       profileScraperMode: 'Profile details no email ($4 per 1k)',
     };
-    const run = await client.actor(APIFY_LINKEDIN_ACTOR).call(input, { waitSecs: 240 });
+    const run = await withRetry(
+      () => client.actor(APIFY_LINKEDIN_ACTOR).call(input, { waitSecs: 240 }),
+      {
+        maxAttempts: 3,
+        baseDelayMs: 3000,
+        onRetry: (attempt, delay, err) => {
+          if (briefId) logAndSave(briefId, `[harvestapi retry] enrichment attempt ${attempt} failed (${(err.message || 'unknown').slice(0, 80)}); retrying in ${Math.round(delay / 1000)}s`, 'warn');
+        },
+      }
+    );
     if (!run || !run.defaultDatasetId) return [];
-    const ds = await client.dataset(run.defaultDatasetId).listItems();
+    const ds = await withRetry(
+      () => client.dataset(run.defaultDatasetId).listItems(),
+      { maxAttempts: 3, baseDelayMs: 1500 }
+    );
     return (ds.items || []).map(it => {
       const locRaw = it.location;
       const locStr = typeof locRaw === 'string'
@@ -304,6 +372,7 @@ async function enrichLinkedIn(client, urls) {
       };
     });
   } catch (e) {
+    if (briefId) logAndSave(briefId, `[harvestapi] enrichment gave up after retries: ${(e.message || 'unknown').slice(0, 100)}. Geo gate falls back to text scan — may rise NON_INDIA false rejects.`, 'warn');
     console.warn('[linkedin enrichment failed]', e.message);
     return [];
   }
@@ -322,12 +391,21 @@ async function claudeKnowledgeCall(briefId, kw, bp) {
   try {
     const sys = `You are a sourcing assistant for a B2B trainer placement firm in India. Given a technology/skill, return named freelance corporate trainers, independent instructors, consultants, SMEs, or architects in India who deliver training. Do NOT return conference speakers without training-delivery evidence. Do NOT return employees of: ${bp.exclusions.slice(0, 8).join(', ')}.${steeringHint(bp.steering)}`;
     const user = `Technology / skill: ${kw}\nLocation: India only.\nMode: ${bp.searchMode === 'niche' ? 'niche (rare tech, prefer founders/principals of small firms)' : 'standard'}\nReturn 5-10 named candidates with: name, LinkedIn URL (best guess if known), 1-line evidence of training-delivery (course, workshop, repeated training engagements). Format as JSON array: [{"name":"","linkedin":"","evidence":""}].`;
-    const resp = await client.messages.create({
-      model: CLAUDE_SMART,
-      max_tokens: 1500,
-      system: sys,
-      messages: [{ role: 'user', content: user }],
-    });
+    const resp = await withRetry(
+      () => client.messages.create({
+        model: CLAUDE_SMART,
+        max_tokens: 1500,
+        system: sys,
+        messages: [{ role: 'user', content: user }],
+      }),
+      {
+        maxAttempts: 2,
+        baseDelayMs: 4000,
+        onRetry: (attempt, delay, err) => {
+          if (briefId) logAndSave(briefId, `[L1.1 retry] Claude knowledge attempt ${attempt} for "${kw}" failed (status ${err.status || '?'}); retrying in ${Math.round(delay / 1000)}s`, 'warn');
+        },
+      }
+    );
     const text = (resp.content[0] && resp.content[0].text) || '';
     return parseJsonArray(text).map(p => ({
       url: p.linkedin || '',
@@ -337,6 +415,7 @@ async function claudeKnowledgeCall(briefId, kw, bp) {
       _claudeNote: p.evidence || '',
     })).filter(p => p.url || p.metadata.title);
   } catch (e) {
+    if (briefId) logAndSave(briefId, `[L1.1] Claude knowledge gave up for "${kw}" after retries: ${(e.message || '').slice(0, 100)}. Falling back to Google-only for this keyword.`, 'warn');
     console.warn('[claude L1.1]', e.message);
     return [];
   }
@@ -348,16 +427,26 @@ async function claudeAdjacentTech(briefId, kw, bp) {
   try {
     const sys = `You suggest adjacent technologies whose practitioners often deliver training in a target technology. Concise, specific, India-trainer-pool-aware.${steeringHint(bp && bp.steering)}`;
     const user = `Target technology: ${kw}\nReturn 3 adjacent/related technologies whose Indian trainers could plausibly deliver this. JSON: ["adj1","adj2","adj3"].`;
-    const resp = await client.messages.create({
-      model: CLAUDE_FAST,
-      max_tokens: 200,
-      system: sys,
-      messages: [{ role: 'user', content: user }],
-    });
+    const resp = await withRetry(
+      () => client.messages.create({
+        model: CLAUDE_FAST,
+        max_tokens: 200,
+        system: sys,
+        messages: [{ role: 'user', content: user }],
+      }),
+      {
+        maxAttempts: 2,
+        baseDelayMs: 3000,
+        onRetry: (attempt, delay, err) => {
+          if (briefId) logAndSave(briefId, `[L2 retry] Adjacent-tech attempt ${attempt} for "${kw}" failed (status ${err.status || '?'}); retrying in ${Math.round(delay / 1000)}s`, 'warn');
+        },
+      }
+    );
     const text = (resp.content[0] && resp.content[0].text) || '';
     const arr = parseJsonArray(text);
     return arr.filter(a => typeof a === 'string').slice(0, 3);
   } catch (e) {
+    if (briefId) logAndSave(briefId, `[L2] Adjacent-tech gave up for "${kw}" after retries: ${(e.message || '').slice(0, 100)}.`, 'warn');
     console.warn('[claude L2]', e.message);
     return [];
   }
@@ -369,12 +458,21 @@ async function claudeInstitutes(briefId, kw, bp) {
   try {
     const sys = `You list Indian training institutes that deliver corporate training in specific technologies. Concise, verifiable.${steeringHint(bp && bp.steering)}`;
     const user = `Technology: ${kw}\nList up to 6 Indian institutes that deliver corporate training in this. JSON: [{"name":"","website":"","city":""}].`;
-    const resp = await client.messages.create({
-      model: CLAUDE_FAST,
-      max_tokens: 800,
-      system: sys,
-      messages: [{ role: 'user', content: user }],
-    });
+    const resp = await withRetry(
+      () => client.messages.create({
+        model: CLAUDE_FAST,
+        max_tokens: 800,
+        system: sys,
+        messages: [{ role: 'user', content: user }],
+      }),
+      {
+        maxAttempts: 2,
+        baseDelayMs: 3000,
+        onRetry: (attempt, delay, err) => {
+          if (briefId) logAndSave(briefId, `[L3 retry] Institutes attempt ${attempt} for "${kw}" failed (status ${err.status || '?'}); retrying in ${Math.round(delay / 1000)}s`, 'warn');
+        },
+      }
+    );
     const text = (resp.content[0] && resp.content[0].text) || '';
     return parseJsonArray(text).map(i => ({
       url: i.website || '',
@@ -384,6 +482,7 @@ async function claudeInstitutes(briefId, kw, bp) {
       _isInstitute: true,
     })).filter(p => p.metadata.title);
   } catch (e) {
+    if (briefId) logAndSave(briefId, `[L3] Institutes gave up for "${kw}" after retries: ${(e.message || '').slice(0, 100)}.`, 'warn');
     console.warn('[claude L3]', e.message);
     return [];
   }
@@ -826,7 +925,7 @@ async function runPipeline(briefId, opts = {}) {
     for (let i = 0; i < queriesToRun.length; i++) {
       const q = queriesToRun[i];
       logAndSave(briefId, `[L1.3 ${i + 1}/${queriesToRun.length}] ${q.query.slice(0, 110)}`);
-      const items = await runGoogleQuery(apifyClient, q);
+      const items = await runGoogleQuery(apifyClient, q, briefId);
       logAndSave(briefId, `[L1.3 ${i + 1}/${queriesToRun.length}] +${items.length} items`);
       allItems = allItems.concat(items);
       store.update(briefId, { counts: { ...((store.get(briefId) || {}).counts || {}), discovered: allItems.length } });
@@ -843,7 +942,7 @@ async function runPipeline(briefId, opts = {}) {
         for (const a of adj) {
           // Run a single LinkedIn query per adjacent tech
           const q = { query: `independent instructor ${a} India site:linkedin.com/in`, keyword: a, source: 'linkedin', tier: 'L2' };
-          const items = await runGoogleQuery(apifyClient, q);
+          const items = await runGoogleQuery(apifyClient, q, briefId);
           logAndSave(briefId, `[L2] "${a}" → +${items.length} items`);
           allItems = allItems.concat(items);
         }
@@ -877,7 +976,7 @@ async function runPipeline(briefId, opts = {}) {
     const linkedInUrls = normalised.map(n => n.url).filter(u => u && u.includes('linkedin.com/in/')).slice(0, ENRICH_CAP);
     let harvestMap = {};
     if (linkedInUrls.length && bp.advanced.sources.linkedin && !previewMode) {
-      const harvested = await enrichLinkedIn(apifyClient, linkedInUrls);
+      const harvested = await enrichLinkedIn(apifyClient, linkedInUrls, briefId);
       // Index by canonical URL — harvestapi normalises in.linkedin.com → www.linkedin.com,
       // so the input URL and the response URL won't byte-match without canonLinkedinUrl.
       harvestMap = Object.fromEntries(harvested.map(h => [canonLinkedinUrl(h.url), h]));
