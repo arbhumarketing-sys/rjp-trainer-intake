@@ -550,7 +550,15 @@ function dedupeItems(items) {
 //   NOISE             — irrelevant → REJECTED
 //
 // This is the 'manual profile check' loop from the SOP, automated.
-function classifySignal(it, bp, harvest) {
+// As of v3.2 this is the FALLBACK classifier — the primary path is
+// classifySignalsBatched which calls Haiku on batches of 15 profiles.
+// Fallback is used when:
+//   - hasLlmClient() returns false (no API key, no CLI token)
+//   - DISABLE_LLM_CLASSIFIER env var is set to '1'
+//   - the LLM batch call fails after retries (per-batch fallback)
+//   - the LLM returns an unknown signal name (per-profile fallback)
+// The 9-class taxonomy is preserved, so output shape is identical.
+function classifySignalRegex(it, bp, harvest) {
   const blob = (it.title + ' ' + it.text).toLowerCase();
   const blob2 = blob + ' ' + (harvest && harvest.headline ? harvest.headline.toLowerCase() : '') + ' ' + (harvest && harvest.about ? harvest.about.toLowerCase() : '');
 
@@ -676,6 +684,137 @@ const SIGNAL_POINTS = {
 };
 
 const REJECTED_SIGNALS = new Set(['SPEAKER_ONLY', 'BIG_FIRM', 'NON_INDIA', 'MUSTNOT_HIT', 'NOISE']);
+
+/* ---------- LLM-based classifier (v3.2 — primary path, regex is fallback) ---------- */
+//
+// Replaces per-profile regex matching with batched Haiku calls. The regex
+// classifier (classifySignalRegex) is preserved as a fallback for:
+//   - environments with no LLM client (no API key, no CLI token)
+//   - explicit operator opt-out (DISABLE_LLM_CLASSIFIER=1)
+//   - per-batch failure after retries
+//   - LLM hallucinated signal name not in the 9-class taxonomy
+//
+// Why batched: the claude CLI subprocess has ~6-9s init overhead per call.
+// Per-profile would be 6-9s × 50 profiles = 5-7 min, unacceptable for the
+// 8-12 min TAT target. Batching 15 profiles per call brings classification
+// down to ~15-20s total. Cost is ~$0.01/brief (Haiku is cheap).
+//
+// Quality gain over regex: catches "Founder of small Salesforce consultancy
+// who runs monthly bootcamps" (was PRACTITIONER), "ex-Wipro freelance trainer"
+// (was BIG_FIRM via regex word-boundary noise), nuanced INSTITUTE vs
+// FREELANCE_TRAINER distinctions, semi-implicit training claims, etc.
+
+const LLM_CLASSIFIER_BATCH_SIZE = parseInt(process.env.LLM_CLASSIFIER_BATCH_SIZE || '15', 10);
+const VALID_SIGNALS = new Set(Object.keys(SIGNAL_POINTS));
+
+async function classifySignalsBatched(itemsWithHarvest, bp, briefId) {
+  const useLlm = hasLlmClient() && process.env.DISABLE_LLM_CLASSIFIER !== '1';
+  if (!useLlm) {
+    if (briefId) logAndSave(briefId, `Classifier: regex mode (LLM disabled or unavailable)`);
+    return itemsWithHarvest.map(({ it, harvest }) => classifySignalRegex(it, bp, harvest));
+  }
+  if (briefId) logAndSave(briefId, `Classifier: LLM mode (Haiku), ${itemsWithHarvest.length} profiles in batches of ${LLM_CLASSIFIER_BATCH_SIZE}`);
+
+  const results = new Array(itemsWithHarvest.length);
+  for (let i = 0; i < itemsWithHarvest.length; i += LLM_CLASSIFIER_BATCH_SIZE) {
+    const batch = itemsWithHarvest.slice(i, i + LLM_CLASSIFIER_BATCH_SIZE);
+    let batchResults;
+    try {
+      batchResults = await classifySignalLLM(batch, bp, briefId, i);
+    } catch (e) {
+      if (briefId) logAndSave(briefId, `[classifier] LLM batch ${i}-${i + batch.length} failed (${(e.message || '').slice(0, 80)}); falling back to regex for these ${batch.length} profile(s)`, 'warn');
+      batchResults = batch.map(({ it, harvest }) => classifySignalRegex(it, bp, harvest));
+    }
+    for (let j = 0; j < batch.length; j++) {
+      // Per-profile fallback: if LLM returned an unknown signal or missing entry, regex it.
+      const cls = batchResults[j];
+      if (cls && VALID_SIGNALS.has(cls.signal)) {
+        results[i + j] = cls;
+      } else {
+        results[i + j] = classifySignalRegex(batch[j].it, bp, batch[j].harvest);
+      }
+    }
+  }
+  return results;
+}
+
+async function classifySignalLLM(batch, bp, briefId, batchOffset) {
+  const client = getAnthropic();
+  if (!client) throw new Error('No LLM client available');
+
+  const sys = `You classify LinkedIn-style profiles for an Indian B2B trainer placement firm into ONE signal category each.
+
+Categories (use EXACT strings):
+  TRAINER_EXPLICIT  — bio EXPLICITLY says trainer/instructor + has training-delivery evidence (workshops, courses, cohorts, "delivered training")
+  FREELANCE_TRAINER — independent/freelance/self-employed + explicit training-delivery
+  TRAINER_IMPLIED   — Founder/Principal/Consultant at small firm; niche-domain bookable as trainer
+  INSTITUTE         — training institute/academy/bootcamp/edtech
+  PRACTITIONER      — has the skill, but NO teaching artefact (engineer/dev/architect/SRE/DBA/etc.)
+  SPEAKER_ONLY      — keynote/conference talks ONLY, no training-delivery → REJECTED
+  BIG_FIRM          — CURRENT employee of an excluded company (see list) → REJECTED
+  NON_INDIA         — location is NOT India → REJECTED
+  MUSTNOT_HIT       — bio hits one of the operator's must-NOT terms → REJECTED
+  NOISE             — irrelevant to the brief → REJECTED
+
+CRITICAL RULES:
+  1. Conference speakers without training-delivery evidence are SPEAKER_ONLY, not trainers.
+  2. Big-firm rule applies only to CURRENT employees. "ex-X", "former X", "previously at X", "earlier at X" → NOT BIG_FIRM (past employees are bookable trainers).
+  3. Geo: trust the countryCode field. If countryCode is non-IN, classify as NON_INDIA.
+  4. PRACTITIONER means skilled but no teaching evidence — it's not a rejection, just a low-scoring accept.
+  5. If the profile data is too sparse to decide, use NOISE.
+
+EXCLUDED COMPANIES (current employees → BIG_FIRM): ${bp.exclusions.slice(0, 14).join(', ')}
+MUST-NOT TERMS (any hit → MUSTNOT_HIT): ${(bp.mustNot || []).join(', ') || '(none)'}
+${steeringHint(bp.steering)}
+
+Output: ONLY a JSON array, one entry per profile, in INPUT ORDER.
+Format: [{"i":0,"signal":"TRAINER_EXPLICIT","reason":"≤10 word reason"}, ...]`;
+
+  const profilesText = batch.map(({ it, harvest }, idx) => {
+    const lines = [`Profile ${idx}:`, `  Title: ${(it.title || '(none)').slice(0, 220)}`];
+    if (harvest) {
+      if (harvest.headline) lines.push(`  Headline: ${harvest.headline.slice(0, 220)}`);
+      if (harvest.location || harvest.countryCode) lines.push(`  Location: ${harvest.location || '?'} (countryCode: ${harvest.countryCode || '?'})`);
+      if (harvest.about) lines.push(`  About: ${harvest.about.slice(0, 380)}`);
+    } else {
+      lines.push(`  Location: (no LinkedIn enrichment available — geo from text only)`);
+    }
+    if (it.text) lines.push(`  Snippet: ${it.text.slice(0, 380)}`);
+    if (it.tier) lines.push(`  Source tier: ${it.tier}`);
+    return lines.join('\n');
+  }).join('\n\n');
+
+  const user = `Classify these ${batch.length} profile(s):\n\n${profilesText}\n\nReturn JSON array now.`;
+
+  const resp = await withRetry(
+    () => client.messages.create({
+      model: CLAUDE_FAST,
+      max_tokens: Math.max(800, batch.length * 80),
+      system: sys,
+      messages: [{ role: 'user', content: user }],
+    }),
+    {
+      maxAttempts: 2,
+      baseDelayMs: 4000,
+      onRetry: (attempt, delay, err) => {
+        if (briefId) logAndSave(briefId, `[classifier retry] batch starting ${batchOffset}: attempt ${attempt} (status ${err.status || '?'}); retrying in ${Math.round(delay / 1000)}s`, 'warn');
+      },
+    }
+  );
+
+  const text = (resp.content[0] && resp.content[0].text) || '';
+  const parsed = parseJsonArray(text);
+
+  // Map by index — defend against the LLM reordering or skipping entries
+  const byIdx = {};
+  for (const entry of parsed) {
+    if (entry && typeof entry === 'object' && Number.isInteger(entry.i) && typeof entry.signal === 'string') {
+      byIdx[entry.i] = { signal: entry.signal.trim().toUpperCase(), reason: (entry.reason || 'LLM classification').slice(0, 200) };
+    }
+  }
+  // Build results in batch order; missing → null (orchestrator falls back to regex)
+  return batch.map((_, i) => byIdx[i] || null);
+}
 
 function bucketFit(it, keywords) {
   const blob = (it.title + ' ' + it.text).toLowerCase();
@@ -984,12 +1123,18 @@ async function runPipeline(briefId, opts = {}) {
     }
     stopEnrich();
 
-    // ---- Scoring + classification ----
+    // ---- Classification (LLM batched, regex fallback) ----
     store.update(briefId, { status: 'scoring' });
     const stopScore = stageStart('Scoring + classification');
-    const scored = normalised.map(it => {
-      const harvest = harvestMap[canonLinkedinUrl(it.url)] || null;
-      const cls = classifySignal(it, bp, harvest);
+    const itemsWithHarvest = normalised.map(it => ({
+      it,
+      harvest: harvestMap[canonLinkedinUrl(it.url)] || null,
+    }));
+    const classifications = await classifySignalsBatched(itemsWithHarvest, bp, briefId);
+
+    const scored = normalised.map((it, i) => {
+      const harvest = itemsWithHarvest[i].harvest;
+      const cls = classifications[i];
       const bf = bucketFit(it, bp.keywords);
       const v = verifyScore(it, harvest);
       const bk = bookScore(cls.signal);
