@@ -1392,10 +1392,15 @@ function renderDetail(m) {
         <div class="panel-sub">${isComplete ? 'Done.' : (status === 'failed' ? 'Stopped on error.' : 'Live — refreshes every 2.5 seconds.')}</div>
         <div class="stages">
           ${stages.map((s, i) => {
-            const cls = (status === 'failed' && i === Math.max(0, ix)) ? 'active' : (i < ix ? 'done' : (i === ix ? 'active' : ''));
-            const statusLabel = i < ix ? 'DONE' : (i === ix ? (status === 'failed' ? 'FAILED' : 'IN PROGRESS') : 'PENDING');
+            const isTerminal = status === 'complete' || status === 'preview_ready';
+            const isDone = i < ix || (isTerminal && i <= ix);
+            const isActive = !isTerminal && i === ix;
+            const cls = (status === 'failed' && i === Math.max(0, ix)) ? 'active' : (isDone ? 'done' : (isActive ? 'active' : ''));
+            const statusLabel = isDone ? 'DONE'
+              : (isActive ? (status === 'failed' ? 'FAILED' : 'IN PROGRESS')
+              : (status === 'failed' && i === ix ? 'FAILED' : 'PENDING'));
             return `<div class="stage ${cls}">
-              <div class="stage-num">${i < ix ? '✓' : i + 1}</div>
+              <div class="stage-num">${isDone ? '✓' : i + 1}</div>
               <div class="stage-info">
                 <span class="stage-name">${s.name}</span>
                 <span class="stage-sub">${s.sub}${meta(s) ? ' · ' + meta(s) : ''}</span>
