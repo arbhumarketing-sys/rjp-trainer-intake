@@ -231,8 +231,11 @@ app.patch('/api/feature-requests/:id', auth.requireAuth, (req, res) => {
   const id = req.params.id;
   const body = req.body || {};
   const valid = ['pending', 'approved', 'rejected', 'in-progress', 'shipped'];
+  if (body.status !== undefined && !valid.includes(body.status)) {
+    return res.status(400).json({ error: `invalid status (allowed: ${valid.join(', ')})` });
+  }
   const patch = {};
-  if (body.status && valid.includes(body.status)) patch.status = body.status;
+  if (body.status) patch.status = body.status;
   if (typeof body.adminNote === 'string') patch.adminNote = body.adminNote.slice(0, 2000);
   patch.updatedAt = new Date().toISOString();
   const updated = store.updateFeatureRequest(id, patch);
@@ -248,6 +251,9 @@ if (fs.existsSync(path.join(FRONTEND_DIR, 'index.html'))) {
 }
 
 app.use((err, req, res, next) => {
+  // Distinguish body-parser errors so clients get the right status code.
+  if (err && err.type === 'entity.parse.failed') return res.status(400).json({ error: 'Invalid JSON body' });
+  if (err && err.type === 'entity.too.large')   return res.status(413).json({ error: 'Body too large (limit 512kb)' });
   console.error('[server error]', err);
   res.status(500).json({ error: err.message });
 });
