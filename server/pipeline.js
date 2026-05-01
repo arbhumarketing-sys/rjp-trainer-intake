@@ -1,5 +1,13 @@
 /**
- * RJP Sourcing Pipeline — v3.2
+ * RJP Sourcing Pipeline — v3.4
+ *
+ * v3.4 (2026-05-02): Excel output now matches the 14-column Word-doc spec
+ * (Name, Role, Company, Domain Skill, Location, Email Official + Personal,
+ * Mobile, LinkedIn, Website, No. of Trainings, Domain Trainings, Activity
+ * Score H/M/L, Remarks). harvestapi data (location, headline, experience)
+ * carried through to the candidate object. Engineering rubric moved to a
+ * second sheet "Engineering details". Email/Mobile/Trainings counts marked
+ * as interview-time fields per the SOP's Step 5.
  *
  * Rebuilt against the team's manual SOP + operator feedback.
  * Replaces the v3 single-source Apify pipeline. Key structural changes:
@@ -1356,64 +1364,225 @@ function buildDecision(p, bp) {
   };
 }
 
+/* ---------- Spec-column helpers (v3.4) ----------
+   The Word doc requirement (RJPInfotek_ManualProcess_Brief / IT Technical
+   Trainer Identification) lists 14 named columns the searcher uses to
+   schedule a call: Name, Role, Company, Domain Skill, Location, Email
+   (Official + Personal), Mobile, LinkedIn URL, Website, No. of Trainings,
+   Domain Trainings, Activity Score (H/M/L), Remarks.
+
+   Email/Mobile/Trainings counts are by-spec interview-time fields (Step 5
+   "Secondary Enrichment over an interview call") — left blank with the
+   interview marker so the sourcer knows the column is intentional, not
+   a missing scrape. Name/Role/Company are derived from the title +
+   harvestapi headline + first experience entry. Activity Score H/M/L
+   maps from the existing 0-100 composite. */
+
+const INTERVIEW_PLACEHOLDER = '— (interview)';
+
+function splitNameRoleCompany(c) {
+  const harvest = c.harvest || {};
+  const title = (c.title || '').trim();
+  const headline = (harvest.headline || '').trim();
+  const exp = (harvest.experience && harvest.experience[0]) || {};
+
+  // Title is typically "<Name> - <Role/Headline>" (Google snippet shape) or
+  // "<Name> | <Co>" or "<Name> at <Co>". Split on the first such separator.
+  let name = title;
+  let rest = '';
+  const m = title.match(/^(.+?)\s+(?:[-—–|]|\bat\b)\s+(.+)$/);
+  if (m) { name = m[1]; rest = m[2]; }
+  // Strip trailing "| LinkedIn", "- LinkedIn", "· LinkedIn"
+  name = name.replace(/\s*[|\-·]\s*LinkedIn\s*$/i, '').trim();
+  rest = rest.replace(/\s*[|\-·]\s*LinkedIn\s*$/i, '').trim();
+
+  // Company: prefer harvestapi experience[0], else extract "at <Co>" / "@ <Co>"
+  // from headline or rest. Skip "at LinkedIn" noise.
+  let company = exp.company || exp.companyName || '';
+  if (!company) {
+    const blob = (rest + ' ' + headline);
+    const at = blob.match(/\b(?:at|@)\s+([A-Z][\w&.,'\- ]{2,50})/);
+    if (at && !/linkedin/i.test(at[1])) company = at[1].trim();
+  }
+  // Tidy trailing punctuation/possessive
+  company = company.replace(/[.,;:|]+$/, '').trim();
+
+  return {
+    name: name.slice(0, 120) || '(no name)',
+    role: (rest || headline).slice(0, 200),
+    company: company.slice(0, 120),
+  };
+}
+
+function roleFromSignal(signal) {
+  return ({
+    TRAINER_EXPLICIT:  'Corporate Trainer',
+    FREELANCE_TRAINER: 'Freelancer',
+    TRAINER_IMPLIED:   'Consultant',
+    INSTITUTE:         'Institute',
+    PRACTITIONER:      'Working Professional',
+  })[signal] || '—';
+}
+
+function activityBand(score) {
+  // Bands match the existing colour fills (≥85 high, 65-84 mid-high, 40-64
+  // mid, <40 low). Spec asks for High/Medium/Low so collapse the top two.
+  if (score >= 65) return 'High';
+  if (score >= 40) return 'Medium';
+  return 'Low';
+}
+
+function locationOf(c) {
+  const h = c.harvest || {};
+  if (h.location) return String(h.location).slice(0, 100);
+  if (h.countryCode === 'IN') return 'India';
+  // Fall back to scanning text/title for a known Indian city
+  const blob = ((c.title || '') + ' ' + (c.text || '')).toLowerCase();
+  for (const city of INDIAN_CITIES) {
+    if (new RegExp('\\b' + city + '\\b', 'i').test(blob)) {
+      return city.charAt(0).toUpperCase() + city.slice(1) + ', India';
+    }
+  }
+  return '';
+}
+
+function extractWebsite(c) {
+  const h = c.harvest || {};
+  if (h.website) return String(h.website).slice(0, 120);
+  if (h.contactInfo && Array.isArray(h.contactInfo.websites) && h.contactInfo.websites[0]) {
+    return String(h.contactInfo.websites[0]).slice(0, 120);
+  }
+  // Last resort: first non-LinkedIn URL in the bio/snippet
+  const txt = (c.text || '') + ' ' + (h.about || '');
+  const m = txt.match(/https?:\/\/(?!(?:www\.|[a-z]{2}\.)?linkedin\.com)[\w.-]+\.[a-z]{2,}[^\s<>"')]*/i);
+  return m ? m[0].slice(0, 120) : '';
+}
+
+function buildRemarks(c) {
+  const parts = [];
+  if (c.decision_reason) parts.push(c.decision_reason);
+  if (c.rerankReason)    parts.push('Sonnet: ' + c.rerankReason);
+  if (c.verifyNote)      parts.push('Web: ' + c.verifyNote);
+  parts.push('Score ' + c.score + ' (' + (c.signal || '') + ')');
+  return parts.join(' · ');
+}
+
 /* ---------- Excel ---------- */
 async function buildXlsx(brief, accepted, rejected, bp, timings) {
   const wb = new ExcelJS.Workbook();
-  wb.creator = 'RJP Sourcing Portal v3.2';
+  wb.creator = 'RJP Sourcing Portal v3.4';
   wb.created = new Date();
 
-  // 1. Candidates
+  // -------- 1. Candidates — 14-column spec sheet (Word doc schema) --------
   const ws = wb.addWorksheet('Candidates');
   ws.columns = [
-    { header: 'Rank', key: 'rank', width: 6 },
-    { header: 'Score', key: 'score', width: 7 },
-    { header: 'Name / Title', key: 'title', width: 50 },
-    { header: 'LinkedIn / URL', key: 'url', width: 45 },
-    { header: 'Signal', key: 'signal', width: 18 },
-    { header: 'Decision reason', key: 'why', width: 40 },
-    { header: 'Source URL (verifiable)', key: 'src', width: 40 },
-    { header: 'Source snippet', key: 'snip', width: 60 },
-    { header: 'Bucket fit', key: 'bf', width: 9 },
-    { header: 'Verify', key: 'v', width: 7 },
-    { header: 'Web verify', key: 'wv', width: 32 },
-    { header: 'Book', key: 'b', width: 6 },
-    { header: 'Tier', key: 'tier', width: 8 },
-    { header: 'Keyword', key: 'kw', width: 22 },
+    { header: 'Rank',                       key: 'rank',     width: 6 },
+    { header: 'Name',                       key: 'name',     width: 28 },
+    { header: 'Role',                       key: 'role',     width: 22 },
+    { header: 'Company',                    key: 'company',  width: 24 },
+    { header: 'Domain Skill',               key: 'domain',   width: 22 },
+    { header: 'Location',                   key: 'location', width: 22 },
+    { header: 'Email (Official)',           key: 'email1',   width: 22 },
+    { header: 'Email (Personal)',           key: 'email2',   width: 22 },
+    { header: 'Mobile Number',              key: 'mobile',   width: 16 },
+    { header: 'LinkedIn URL',               key: 'linkedin', width: 44 },
+    { header: 'Website / Portfolio',        key: 'website',  width: 30 },
+    { header: 'No. of Trainings Conducted', key: 'tcount',   width: 12 },
+    { header: 'Relevant Domain Trainings',  key: 'tdomain',  width: 12 },
+    { header: 'Activity Score',             key: 'activity', width: 12 },
+    { header: 'Remarks',                    key: 'remarks',  width: 60 },
   ];
   ws.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
   ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E40AF' } };
 
   accepted.forEach((c, i) => {
-    // Compose "why" with: classifier reason | rerank reasoning (if Sonnet ranked it)
-    const whyParts = [c.decision_reason];
-    if (c.rerankReason) whyParts.push(`Sonnet: ${c.rerankReason}`);
+    const split = splitNameRoleCompany(c);
+    // Prefer the signal-derived role label over the headline tail — the spec
+    // asks for one of {Freelancer, Corporate, Working Professional, ...}, not
+    // a free-form bio fragment. Keep the bio fragment in Remarks.
+    const role = roleFromSignal(c.signal) || split.role;
     ws.addRow({
-      rank: i + 1,
-      score: c.score,
-      title: c.title || '(no title)',
-      url: c.url || '',
-      signal: c.signal,
-      why: whyParts.join(' || '),
-      src: c.decision_url || c.url || '',
-      snip: c.decision_snippet || '',
-      bf: c.bucketFit,
-      v: c.verify,
-      wv: c.verifyNote || (c.webVerified == null ? '(not verified)' : ''),
-      b: c.book,
-      tier: c.tier,
-      kw: c.keyword,
+      rank:     i + 1,
+      name:     split.name,
+      role:     role,
+      company:  split.company,
+      domain:   (brief.domain || c.keyword || '').toString().slice(0, 80),
+      location: locationOf(c),
+      email1:   INTERVIEW_PLACEHOLDER,
+      email2:   INTERVIEW_PLACEHOLDER,
+      mobile:   INTERVIEW_PLACEHOLDER,
+      linkedin: c.url || '',
+      website:  extractWebsite(c),
+      tcount:   INTERVIEW_PLACEHOLDER,
+      tdomain:  INTERVIEW_PLACEHOLDER,
+      activity: activityBand(c.score),
+      remarks:  buildRemarks(c),
     });
   });
 
+  // Colour the Activity Score column by band
+  const activityColIdx = ws.columns.findIndex(c => c.key === 'activity') + 1;
   for (let r = 2; r <= ws.rowCount; r++) {
-    const s = ws.getCell('B' + r).value;
+    const cell = ws.getCell(r, activityColIdx);
+    const band = cell.value;
+    let fill = 'FFF6E6E8';
+    if (band === 'High')   fill = 'FFE8F3EC';
+    else if (band === 'Medium') fill = 'FFFBF2E1';
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fill } };
+    ws.getRow(r).alignment = { vertical: 'top', wrapText: true };
+  }
+
+  // -------- 2. Engineering details — rubric breakdown for power users --------
+  const wsE = wb.addWorksheet('Engineering details');
+  wsE.columns = [
+    { header: 'Rank',                       key: 'rank',     width: 6 },
+    { header: 'Name / Title',               key: 'title',    width: 50 },
+    { header: 'Score',                      key: 'score',    width: 7 },
+    { header: 'Signal',                     key: 'signal',   width: 18 },
+    { header: 'Decision reason',            key: 'why',      width: 40 },
+    { header: 'Sonnet rerank',              key: 'sonnet',   width: 40 },
+    { header: 'Source URL (verifiable)',    key: 'src',      width: 40 },
+    { header: 'Source snippet',             key: 'snip',     width: 60 },
+    { header: 'Bucket fit',                 key: 'bf',       width: 9 },
+    { header: 'Verify',                     key: 'v',        width: 7 },
+    { header: 'Web verify',                 key: 'wv',       width: 32 },
+    { header: 'Book',                       key: 'b',        width: 6 },
+    { header: 'Tier',                       key: 'tier',     width: 8 },
+    { header: 'Sources',                    key: 'sources',  width: 30 },
+    { header: 'Keyword',                    key: 'kw',       width: 22 },
+  ];
+  wsE.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  wsE.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF374151' } };
+
+  accepted.forEach((c, i) => {
+    wsE.addRow({
+      rank:    i + 1,
+      title:   c.title || '(no title)',
+      score:   c.score,
+      signal:  c.signal,
+      why:     c.decision_reason || '',
+      sonnet:  c.rerankReason || '',
+      src:     c.decision_url || c.url || '',
+      snip:    c.decision_snippet || '',
+      bf:      c.bucketFit,
+      v:       c.verify,
+      wv:      c.verifyNote || (c.webVerified == null ? '(not verified)' : ''),
+      b:       c.book,
+      tier:    c.tier,
+      sources: (c.sources || []).join(', '),
+      kw:      c.keyword,
+    });
+  });
+
+  for (let r = 2; r <= wsE.rowCount; r++) {
+    const s = wsE.getCell('C' + r).value;
     let fill;
     if (s >= 85) fill = 'FFE8F3EC';
     else if (s >= 65) fill = 'FFEBF0F7';
     else if (s >= 40) fill = 'FFFBF2E1';
     else fill = 'FFF6E6E8';
-    ws.getCell('B' + r).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fill } };
-    ws.getRow(r).alignment = { vertical: 'top', wrapText: true };
+    wsE.getCell('C' + r).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fill } };
+    wsE.getRow(r).alignment = { vertical: 'top', wrapText: true };
   }
 
   // 2. Rejected — for audit, the 'why' per the verifiable-conclusion ask
@@ -1462,6 +1631,13 @@ async function buildXlsx(brief, accepted, rejected, bp, timings) {
     ['Submitted at', brief.createdAt],
     ['Submitted by', (brief.operator && brief.operator.name) || brief.submittedBy || '—'],
     ['Steering / direction', brief.steering || '—'],
+    ['', ''],
+    ['INTERVIEW-TIME FIELDS', ''],
+    ['Email (Official)',          'Filled by sourcer during the interview call (Step 5 of the manual SOP). Marked "— (interview)" in the Candidates sheet.'],
+    ['Email (Personal)',          'Filled by sourcer during the interview call.'],
+    ['Mobile Number',             'Filled by sourcer during the interview call.'],
+    ['No. of Trainings Conducted','Filled by sourcer during the interview call (asked of the trainer).'],
+    ['Relevant Domain Trainings', 'Filled by sourcer during the interview call (asked of the trainer).'],
     ['', ''],
     ['STAGE TIMINGS (TAT)', ''],
     ...timings.map(t => [t.stage, `${t.elapsed}s`]),
@@ -1620,6 +1796,12 @@ async function runPipeline(briefId, opts = {}) {
       const bk = bookScore(cls.signal);
       const candidate = {
         ...it,
+        // v3.4: carry harvest through to the candidate so buildXlsx can read
+        // location/headline/experience/about for the spec-column Excel. Harvest
+        // is null for non-LinkedIn entries (Udemy, YouTube, blog hits) — the
+        // helpers (splitNameRoleCompany, locationOf, extractWebsite) handle
+        // that case by falling back to title/text scraping.
+        harvest: harvest || null,
         signal: cls.signal,
         reason: cls.reason,
         bucketFit: bf,
