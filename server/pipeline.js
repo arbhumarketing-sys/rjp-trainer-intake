@@ -35,6 +35,16 @@ const store = require('./store');
 let Anthropic = null;
 try { Anthropic = require('@anthropic-ai/sdk').default || require('@anthropic-ai/sdk'); } catch (_) { /* optional */ }
 
+const _USE_CLI = process.env.ANTHROPIC_VIA_CLAUDE_CLI === 'true';
+let ClaudeCliClient = null;
+if (_USE_CLI) {
+  try { ClaudeCliClient = require('./anthropic-claude-cli').ClaudeCliClient; } catch (_) { /* optional */ }
+}
+function hasLlmClient() {
+  if (_USE_CLI) return !!ClaudeCliClient;
+  return !!(Anthropic && process.env.ANTHROPIC_API_KEY);
+}
+
 const OUTPUT_DIR = process.env.OUTPUT_DIR || path.join(__dirname, 'outputs');
 fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 
@@ -264,6 +274,7 @@ async function enrichLinkedIn(client, urls) {
 
 /* ---------- Claude API (L1.1, L1.2, L2, L3, classifier) ---------- */
 function getAnthropic() {
+  if (_USE_CLI) return ClaudeCliClient ? new ClaudeCliClient() : null;
   if (!Anthropic || !process.env.ANTHROPIC_API_KEY) return null;
   return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 }
@@ -739,7 +750,7 @@ async function runPipeline(briefId, opts = {}) {
 
     // ---- L1.1: Claude knowledge ----
     let allItems = [];
-    if (!previewMode && Anthropic && process.env.ANTHROPIC_API_KEY) {
+    if (!previewMode && hasLlmClient()) {
       const stop = stageStart('L1.1 Claude knowledge');
       for (const kw of bp.keywords) {
         const items = await claudeKnowledgeCall(briefId, kw, bp);
@@ -748,7 +759,7 @@ async function runPipeline(briefId, opts = {}) {
       }
       stop();
     } else if (!previewMode) {
-      logAndSave(briefId, 'L1.1 skipped — ANTHROPIC_API_KEY not set. Falling back to Google-only.', 'warn');
+      logAndSave(briefId, `L1.1 skipped — no LLM client (set ANTHROPIC_VIA_CLAUDE_CLI=true or ANTHROPIC_API_KEY). Falling back to Google-only.`, 'warn');
     }
 
     // ---- L1.3: Apify Google ----
@@ -768,7 +779,7 @@ async function runPipeline(briefId, opts = {}) {
 
     // ---- L2: adjacent-tech expansion (Niche or thin results) ----
     let normalised = dedupeItems(allItems.map(normaliseItem));
-    if (!previewMode && (bp.searchMode === 'niche' || normalised.length < 10) && Anthropic && process.env.ANTHROPIC_API_KEY) {
+    if (!previewMode && (bp.searchMode === 'niche' || normalised.length < 10) && hasLlmClient()) {
       const stop = stageStart('L2 Adjacent tech');
       for (const kw of bp.keywords) {
         const adj = await claudeAdjacentTech(briefId, kw);
@@ -786,7 +797,7 @@ async function runPipeline(briefId, opts = {}) {
     }
 
     // ---- L3: Institutes (Niche + still thin) ----
-    if (!previewMode && bp.searchMode === 'niche' && normalised.length < 8 && Anthropic && process.env.ANTHROPIC_API_KEY) {
+    if (!previewMode && bp.searchMode === 'niche' && normalised.length < 8 && hasLlmClient()) {
       const stop = stageStart('L3 Institutes');
       for (const kw of bp.keywords) {
         const inst = await claudeInstitutes(briefId, kw);

@@ -29,6 +29,17 @@ const { runPipeline, runWithFeedback, OUTPUT_DIR, DEFAULT_BIGFIRM_EXCLUSIONS } =
 let Anthropic = null;
 try { Anthropic = require('@anthropic-ai/sdk').default || require('@anthropic-ai/sdk'); } catch (_) {}
 
+const _USE_CLI = process.env.ANTHROPIC_VIA_CLAUDE_CLI === 'true';
+let ClaudeCliClient = null;
+if (_USE_CLI) {
+  try { ClaudeCliClient = require('./anthropic-claude-cli').ClaudeCliClient; } catch (_) {}
+}
+function makeLlmClient() {
+  if (_USE_CLI) return ClaudeCliClient ? new ClaudeCliClient() : null;
+  if (!Anthropic || !process.env.ANTHROPIC_API_KEY) return null;
+  return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+}
+
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
 
@@ -157,11 +168,11 @@ app.post('/api/briefs/:id/feedback', auth.requireAuth, (req, res) => {
 app.post('/api/briefs/parse', auth.requireAuth, async (req, res) => {
   const text = String((req.body && req.body.text) || '').slice(0, 2000).trim();
   if (!text) return res.status(400).json({ error: 'text required' });
-  if (!Anthropic || !process.env.ANTHROPIC_API_KEY) {
-    return res.status(503).json({ error: 'Free-text parsing requires ANTHROPIC_API_KEY (not set)' });
+  const client = makeLlmClient();
+  if (!client) {
+    return res.status(503).json({ error: 'Free-text parsing requires ANTHROPIC_API_KEY or ANTHROPIC_VIA_CLAUDE_CLI=true (none set)' });
   }
   try {
-    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
     const sys = `You parse one-line trainer-sourcing briefs into structured JSON. Output ONLY valid JSON with these keys: title (string), keywords (array), must (array), should (array), mustNot (array), clientCompany (string), customExclusions (array), searchMode ("std"|"niche"), deadline (string), notes (string).`;
     const user = `Parse this brief: "${text}"\nReturn the JSON only.`;
     const resp = await client.messages.create({

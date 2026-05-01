@@ -5,7 +5,7 @@ services:
     plan: free
     region: singapore
     rootDir: server
-    buildCommand: npm install
+    buildCommand: npm install && npm install -g @anthropic-ai/claude-code
     startCommand: node server.js
     healthCheckPath: /healthz
     envVars:
@@ -19,3 +19,17 @@ services:
         value: "20"
       - key: ALLOWED_ORIGINS
         value: "*"
+      # ----- Max-plan Claude integration via the `claude` CLI subprocess.
+      # ANTHROPIC_VIA_CLAUDE_CLI=true routes LLM calls through the locally-
+      # installed claude CLI (auth'd by CLAUDE_CODE_OAUTH_TOKEN below) so the
+      # server bills against the operator's Claude Max subscription instead of
+      # API console credits. Get a long-lived token via `claude setup-token`
+      # on the operator's Mac, then paste it into Render's Environment tab.
+      - key: ANTHROPIC_VIA_CLAUDE_CLI
+        value: "true"
+      - key: CLAUDE_CODE_OAUTH_TOKEN
+        sync: false
+      - key: CLAUDE_MODEL_FAST
+        value: "claude-haiku-4-5-20251001"
+      - key: CLAUDE_MODEL_SMART
+        value: "claude-sonnet-4-5"
