@@ -492,6 +492,92 @@
     .stepper-label { display: none; }
     .meta-grid { grid-template-columns: 1fr 1fr; }
   }
+
+  /* ============ v3.2 backend status / cold-start UX ============ */
+  .cold-banner {
+    display: none;
+    padding: 10px 20px;
+    background: var(--warn-soft);
+    border-bottom: 1px solid var(--warn);
+    color: var(--warn);
+    font-size: 13px;
+    align-items: center;
+    gap: 10px;
+  }
+  .cold-banner.show { display: flex; }
+  .cold-banner.error {
+    background: var(--bad-soft);
+    border-color: var(--bad);
+    color: var(--bad);
+  }
+  .cold-banner.lowyield {
+    border-radius: var(--radius);
+    margin-bottom: 14px;
+    border: 1px solid var(--warn);
+  }
+  .cold-banner .spinner { display: inline-block; animation: spin 1.2s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .health-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 12px;
+    font-size: 11px; font-weight: 500;
+    background: var(--line-soft);
+    color: var(--ink-3);
+    cursor: help;
+    user-select: none;
+  }
+  .health-pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-4); flex-shrink: 0; }
+  .health-pill.warm { background: var(--good-soft); color: var(--good); }
+  .health-pill.warm .dot { background: var(--good); }
+  .health-pill.warming { background: var(--warn-soft); color: var(--warn); }
+  .health-pill.warming .dot { background: var(--warn); animation: pulse 1.4s infinite; }
+  .health-pill.cold { background: var(--bad-soft); color: var(--bad); }
+  .health-pill.cold .dot { background: var(--bad); }
+  @keyframes pulse { 50% { opacity: 0.35; } }
+
+  .btn.warm-btn { font-size: 12px; padding: 7px 11px; }
+  .btn.warm-btn .spinner { display: inline-block; }
+
+  /* Now-doing inline progress card — shows the most recent log line so the
+     user always sees live activity even between stage transitions. */
+  .now-doing {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px;
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    color: var(--accent);
+    font-size: 13px;
+    margin: 12px 0;
+  }
+  .now-doing .now-spin {
+    width: 14px; height: 14px;
+    border: 2px solid var(--accent-soft);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    flex-shrink: 0;
+  }
+  .now-doing strong { font-weight: 600; }
+  .now-doing .now-msg {
+    flex: 1; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+  }
+
+  /* Wizard cold-start hint on the Review step */
+  .wizard-cold-hint {
+    margin: 10px 0 0;
+    padding: 10px 14px;
+    background: var(--warn-soft);
+    border: 1px dashed var(--warn);
+    border-radius: var(--radius-sm);
+    color: var(--warn);
+    font-size: 12.5px;
+    display: flex; align-items: center; gap: 8px;
+  }
 </style>
 </head>
 <body>
@@ -532,6 +618,12 @@ let state = {
   pollTimer: null,
   draft: defaultDraft(),
   defaultExclusions: [],
+  // v3.2 backend health surface — drives the cold-start banner + warm-up button
+  backendStatus: 'unknown',  // unknown | warming | warm | cold
+  backendUptime: null,       // seconds since last server boot
+  backendDirty: null,        // { briefs, featureRequests } from /healthz
+  backendCheckedAt: null,    // ms timestamp
+  healthTimer: null,
 };
 function defaultDraft() {
   return {
@@ -589,6 +681,91 @@ async function loadBriefs() {
   }
 }
 
+/* ============================================================ */
+/* BACKEND HEALTH (v3.2)                                        */
+/* ============================================================ */
+// Render free tier spins down web services after 15 min idle. The first
+// request after spin-down takes ~22s to wake the dyno, init the Postgres
+// pool, and warm the claude CLI subprocess. Without this code, RJP would
+// see a "frozen" UI for 25s with no feedback. With this code, they see a
+// banner explaining what's happening and a status pill showing live state.
+//
+// Three states:
+//   warm     — last /healthz returned in <5s and was 200
+//   warming  — /healthz is in flight, OR last response was slow (>5s)
+//   cold     — /healthz failed or timed out (>35s)
+//
+// The "Warm up" button in the topbar fires checkBackend() on demand so
+// users can pre-warm before they click "+ New brief". A 60s interval also
+// re-checks automatically so the pill stays current.
+
+async function checkBackend() {
+  const start = Date.now();
+  // First-ever check shows 'warming' so the pill isn't blank
+  if (state.backendStatus === 'unknown') state.backendStatus = 'warming';
+  renderBackendIndicators();
+  try {
+    const ctrl = new AbortController();
+    const timeoutId = setTimeout(() => ctrl.abort(), 35000);
+    const res = await fetch(API_BASE + '/healthz', { signal: ctrl.signal, headers: { 'Cache-Control': 'no-cache' } });
+    clearTimeout(timeoutId);
+    if (!res.ok) throw new Error('healthz HTTP ' + res.status);
+    const data = await res.json();
+    const elapsed = Date.now() - start;
+    state.backendStatus = elapsed > 5000 ? 'warming' : 'warm';
+    state.backendUptime = data.uptimeSec || null;
+    state.backendDirty = data.dirty || null;
+    state.backendCheckedAt = Date.now();
+    return state.backendStatus;
+  } catch (e) {
+    state.backendStatus = 'cold';
+    state.backendCheckedAt = Date.now();
+    return 'cold';
+  } finally {
+    renderBackendIndicators();
+  }
+}
+
+function renderBackendIndicators() {
+  const pill = document.getElementById('health-pill');
+  const banner = document.getElementById('cold-banner');
+  if (pill) {
+    pill.className = 'health-pill ' + state.backendStatus;
+    const labels = {
+      unknown: 'Checking…',
+      warming: 'Warming up…',
+      warm:    'Backend warm',
+      cold:    'Backend offline',
+    };
+    pill.innerHTML = `<span class="dot"></span>${labels[state.backendStatus] || 'Unknown'}`;
+    const dirtyNote = state.backendDirty && (state.backendDirty.briefs || state.backendDirty.featureRequests)
+      ? `\n${state.backendDirty.briefs} brief(s), ${state.backendDirty.featureRequests} FR(s) pending re-persist`
+      : '';
+    pill.title = state.backendUptime != null
+      ? `Backend uptime: ${formatDuration(state.backendUptime)}\nLast checked: ${new Date(state.backendCheckedAt).toLocaleTimeString()}${dirtyNote}\nClick "Warm up" if a submission feels slow.`
+      : 'Click "Warm up" if a submission feels slow.';
+  }
+  if (banner) {
+    if (state.backendStatus === 'cold') {
+      banner.className = 'cold-banner show error';
+      banner.innerHTML = '<span>⚠</span><span><strong>Backend unreachable.</strong> Render may be cold-starting (~25s) or down. Click <strong>Warm up</strong> in the top bar to retry. New submissions will queue but will fail to start until the backend is back.</span>';
+    } else if (state.backendStatus === 'warming') {
+      banner.className = 'cold-banner show';
+      banner.innerHTML = '<span class="spinner">⟳</span><span><strong>Backend was idle and is warming up.</strong> First request usually takes 20-30s. The status pill in the top bar turns green when ready. Submissions made now will work — just slower than usual.</span>';
+    } else {
+      banner.className = 'cold-banner';
+    }
+  }
+}
+
+function startHealthLoop() {
+  if (state.healthTimer) clearInterval(state.healthTimer);
+  // 60s polling so the pill reflects live state without spamming the server.
+  // The keep-warm GH Actions cron pings every 10 min from outside; this is for
+  // in-tab freshness only.
+  state.healthTimer = setInterval(checkBackend, 60 * 1000);
+}
+
 async function getBrief(id) {
   return (await api('GET', '/api/briefs/' + encodeURIComponent(id))).brief;
 }
@@ -630,11 +807,14 @@ function renderShell() {
       </div>
       <div class="topbar-actions">
         <span class="topbar-clock" id="clock"></span>
+        <span class="health-pill unknown" id="health-pill"><span class="dot"></span>Checking…</span>
+        <button class="btn ghost warm-btn" id="btn-warm" title="Click before a fresh brief if you haven't used the portal in 15+ minutes. Pre-warms the backend so your first submission is instant instead of waiting ~25s for the server to wake up. Safe to click any time; doesn't cost anything.">⚡ Warm up</button>
         <button class="btn ghost" id="btn-home">Repository</button>
         <button class="btn ghost" id="btn-admin">Admin</button>
         <button class="btn primary" id="btn-new">+ New brief</button>
       </div>
     </header>
+    <div class="cold-banner" id="cold-banner"></div>
     <div class="layout">
       <aside class="sidebar">
         <div class="sidebar-section"><span>Past briefs</span><span class="count" id="sb-count">—</span></div>
@@ -648,6 +828,18 @@ function wireShell() {
   document.getElementById('btn-home').addEventListener('click', () => { state.view = 'home'; state.activeBriefId = null; stopPolling(); renderMain(); renderSidebar(); });
   document.getElementById('btn-admin').addEventListener('click', async () => { state.view = 'admin'; state.activeBriefId = null; stopPolling(); await loadFeatureRequests(); renderMain(); renderSidebar(); });
   document.getElementById('btn-new').addEventListener('click', () => { state.view = 'new'; state.step = 1; state.draft = defaultDraft(); renderMain(); renderSidebar(); });
+  document.getElementById('btn-warm').addEventListener('click', async () => {
+    const btn = document.getElementById('btn-warm');
+    btn.disabled = true;
+    const orig = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner">⟳</span> Warming…';
+    const result = await checkBackend();
+    btn.disabled = false;
+    btn.innerHTML = orig;
+    if (result === 'warm')        toast('Backend is warm — submissions will be instant.', 'success');
+    else if (result === 'cold')   toast('Backend still unreachable. Wait ~30s and try Warm up again.', 'error');
+    else                          toast('Backend warming up. Submission will start within ~10-15s.', '');
+  });
   startClock();
 }
 
@@ -1208,6 +1400,15 @@ function renderStep4() {
         <div>Deadline</div><div>${esc(d.deadline) || '—'}</div>
       </div>
 
+      ${state.backendStatus !== 'warm' ? `
+        <div class="wizard-cold-hint">
+          <span>${state.backendStatus === 'cold' ? '⚠' : '⏳'}</span>
+          <span>${state.backendStatus === 'cold'
+            ? 'Backend looks offline. Click <strong>⚡ Warm up</strong> in the top bar before submitting, otherwise this submission will fail.'
+            : 'Backend is still warming up. Submission will work but may take 20-30s longer than usual to start. Click <strong>⚡ Warm up</strong> and wait for green if you want to be sure.'}</span>
+        </div>
+      ` : ''}
+
       <div class="panel-actions">
         <button class="btn" id="btn-back">← Back</button>
         <button class="btn" id="btn-preview">Run pre-flight (1 query, 5 samples)</button>
@@ -1376,6 +1577,11 @@ function renderDetail(m) {
 
       ${tatHTML}
 
+      ${b.lowYield ? `<div class="cold-banner show lowyield">
+        <span>⚠</span>
+        <span><strong>Low-yield run.</strong> ${esc(b.lowYieldReason || 'Fewer candidates than expected — review keywords and exclusions.')} You can re-run with adjusted feedback below.</span>
+      </div>` : ''}
+
       <div class="meta-grid">
         <div class="meta-cell"><span class="meta-label">Mode</span><span class="meta-val">${b.mode === 'niche' ? 'Niche' : 'Standard'}</span></div>
         <div class="meta-cell"><span class="meta-label">Domain</span><span class="meta-val">${esc(b.domain || '—')}</span></div>
@@ -1390,6 +1596,13 @@ function renderDetail(m) {
       <div class="panel">
         <h3>Pipeline progress</h3>
         <div class="panel-sub">${isComplete ? 'Done.' : (status === 'failed' ? 'Stopped on error.' : 'Live — refreshes every 2.5 seconds.')}</div>
+        ${(!isComplete && status !== 'failed' && (b.log || []).length) ? `
+          <div class="now-doing">
+            <div class="now-spin"></div>
+            <strong>Now:</strong>
+            <span class="now-msg">${esc((b.log[b.log.length - 1].msg || '').slice(0, 200))}</span>
+          </div>
+        ` : ''}
         <div class="stages">
           ${stages.map((s, i) => {
             const isTerminal = status === 'complete' || status === 'preview_ready';
@@ -1552,6 +1765,10 @@ function toast(msg, kind) {
     try { await loadBriefs(); } catch (e) {}
   }
   render();
+  // Fire-and-forget — backend warmth check runs in parallel with first render
+  // so the user sees the UI immediately and the pill updates a moment later.
+  checkBackend();
+  startHealthLoop();
 })();
 </script>
 </body>
