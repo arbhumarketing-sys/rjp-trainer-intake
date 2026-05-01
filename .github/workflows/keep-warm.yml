@@ -1,0 +1,38 @@
+name: Keep Render warm
+
+# Render free tier spins down web services after 15 min of inactivity.
+# Cold start is ~22s for the first request (Node + Postgres pool + claude CLI subprocess).
+#
+# This workflow pings /healthz every 10 min so the dyno stays warm and users
+# don't hit the cold start. The frontend also has a manual "Warm up backend"
+# button as a fallback for moments when the cron skips (GitHub Actions cron
+# is best-effort with up to ~10 min skew during platform load).
+#
+# Cost: zero — Actions minutes are unlimited on public repos.
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Ping /healthz with retries
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if response=$(curl -fsS --max-time 30 https://rjp-trainer-intake-server.onrender.com/healthz); then
+              echo "ok (attempt $attempt): $response"
+              exit 0
+            fi
+            echo "attempt $attempt failed"
+            sleep 10
+          done
+          echo "All 3 ping attempts failed — Render service is unreachable."
+          exit 1

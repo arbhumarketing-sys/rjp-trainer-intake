@@ -1,0 +1,80 @@
+name: Render Deploy
+
+# Replaces the unreliable GitHub→Render auto-deploy webhook.
+# Triggers a Render deploy via API on every push to main, then polls until
+# the deploy is live or fails. A failed deploy turns the commit red and
+# emails the repo owner — eliminates the silent-failure mode that motivated
+# this workflow.
+#
+# Required repo secrets:
+#   RENDER_API_KEY     — Render account API key (same value as ~/.config/rjp/render-api-key)
+#   RENDER_SERVICE_ID  — srv-d7pknavavr4c73erkobg
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: render-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Trigger and verify Render deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Trigger Render deploy
+        id: trigger
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+        run: |
+          set -euo pipefail
+          response=$(curl -fsS -X POST \
+            -H "Authorization: Bearer $RENDER_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{}' \
+            "https://api.render.com/v1/services/$RENDER_SERVICE_ID/deploys")
+          deploy_id=$(echo "$response" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+          echo "deploy_id=$deploy_id" >> "$GITHUB_OUTPUT"
+          echo "Triggered deploy: $deploy_id"
+
+      - name: Poll until deploy reaches a terminal state
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+          DEPLOY_ID: ${{ steps.trigger.outputs.deploy_id }}
+        run: |
+          set -euo pipefail
+          deadline=$(( $(date +%s) + 600 ))
+          prev=""
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            status=$(curl -fsS \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              "https://api.render.com/v1/services/$RENDER_SERVICE_ID/deploys/$DEPLOY_ID" \
+              | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status","?"))')
+            if [ "$status" != "$prev" ]; then
+              echo "$(date -u +%H:%M:%S)  status: $status"
+              prev="$status"
+            fi
+            case "$status" in
+              live)
+                echo "Deploy succeeded."
+                health=$(curl -fsS --max-time 30 https://rjp-trainer-intake-server.onrender.com/healthz)
+                echo "healthz: $health"
+                exit 0
+                ;;
+              build_failed|update_failed|canceled|pre_deploy_failed|deactivated)
+                echo "Deploy failed with status: $status"
+                exit 1
+                ;;
+            esac
+            sleep 10
+          done
+          echo "Deploy timed out after 10 minutes."
+          exit 1
