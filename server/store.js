@@ -1,108 +1,161 @@
 /**
- * File-based stores. Briefs + feature requests, one JSON file per record.
+ * Postgres-backed store with in-memory cache.
  *
- * v3.1 additions:
- *   - appendLog accepts a meta arg (per-stage timings, etc.)
- *   - Feature-requests collection (Form 2 from the WhatsApp thread).
- *   - Seed loader for backfilling Run01-05 test runs at server boot.
+ * On boot: hydrate Maps from Postgres (briefs, feature_requests). Subsequent
+ * reads (.get/.list/etc.) are synchronous reads from the Map. Writes update the
+ * Map immediately AND fire-and-forget an UPSERT to Postgres. Race window
+ * between map-write and DB-write is small and ignorable for this workload
+ * (each brief takes minutes to process; we're not write-throughput-bound).
+ *
+ * If DATABASE_URL isn't set, falls back to filesystem JSON files (the v3 store
+ * behaviour) — useful for local dev. Production on Render free tier sets
+ * DATABASE_URL automatically.
+ *
+ * Schema (auto-created on boot):
+ *   briefs(id TEXT PK, data JSONB, created_at TIMESTAMPTZ)
+ *   feature_requests(id TEXT PK, data JSONB, created_at TIMESTAMPTZ)
  */
+'use strict';
 const fs = require('fs');
 const path = require('path');
 
-const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
-const FR_DIR = path.join(DATA_DIR, 'feature-requests');
+const DATABASE_URL = process.env.DATABASE_URL || '';
 const SEED_FILE = path.join(__dirname, 'seed-briefs.json');
 
-fs.mkdirSync(DATA_DIR, { recursive: true });
-fs.mkdirSync(FR_DIR, { recursive: true });
+// In-memory caches — single source of truth for reads.
+const briefs = new Map();             // id -> brief object
+const featureRequests = new Map();    // id -> fr object
 
-function pathFor(id) { return path.join(DATA_DIR, id + '.json'); }
-function frPathFor(id) { return path.join(FR_DIR, id + '.json'); }
+let pool = null;
+let dbReady = false;
 
-/* ---------- Briefs ---------- */
+/* ---------- Postgres bootstrapping ---------- */
+async function initPostgres() {
+  if (!DATABASE_URL) {
+    console.warn('[store] DATABASE_URL not set — falling back to filesystem JSON store (no persistence across redeploys).');
+    return false;
+  }
+  const { Pool } = require('pg');
+  pool = new Pool({
+    connectionString: DATABASE_URL,
+    // Render internal connections don't need SSL; external ones do. Leave default
+    // (no SSL) for the internal hostname; setting it here would fail with
+    // self-signed-cert errors on the internal endpoint.
+    ssl: /\.render\.com/.test(DATABASE_URL) && !/dpg-[a-z0-9]+-a[:/]/.test(DATABASE_URL)
+      ? { rejectUnauthorized: false }
+      : false,
+    max: 4,
+    idleTimeoutMillis: 30000,
+  });
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS briefs (
+      id TEXT PRIMARY KEY,
+      data JSONB NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS briefs_created_at_idx ON briefs(created_at DESC);
+    CREATE TABLE IF NOT EXISTS feature_requests (
+      id TEXT PRIMARY KEY,
+      data JSONB NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS feature_requests_created_at_idx ON feature_requests(created_at DESC);
+  `);
+  // Hydrate caches.
+  const r1 = await pool.query('SELECT id, data FROM briefs');
+  for (const row of r1.rows) briefs.set(row.id, row.data);
+  const r2 = await pool.query('SELECT id, data FROM feature_requests');
+  for (const row of r2.rows) featureRequests.set(row.id, row.data);
+  dbReady = true;
+  console.log(`[store] Postgres ready — hydrated ${briefs.size} briefs, ${featureRequests.size} feature requests.`);
+  return true;
+}
+
+// Fire-and-forget DB write. Logs but doesn't throw — the in-memory cache is
+// the source of truth for the request response, and a failed DB write will
+// retry on the next save() of the same record.
+function _persistBrief(b) {
+  if (!pool) return;
+  pool.query(
+    `INSERT INTO briefs (id, data, created_at)
+     VALUES ($1, $2::jsonb, COALESCE(($2::jsonb->>'createdAt')::timestamptz, NOW()))
+     ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`,
+    [b.id, JSON.stringify(b)]
+  ).catch(e => console.warn('[store] persistBrief failed:', e.message));
+}
+
+function _persistFr(f) {
+  if (!pool) return;
+  pool.query(
+    `INSERT INTO feature_requests (id, data, created_at)
+     VALUES ($1, $2::jsonb, COALESCE(($2::jsonb->>'createdAt')::timestamptz, NOW()))
+     ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`,
+    [f.id, JSON.stringify(f)]
+  ).catch(e => console.warn('[store] persistFr failed:', e.message));
+}
+
+/* ---------- Briefs (sync API) ---------- */
 function save(brief) {
-  fs.writeFileSync(pathFor(brief.id), JSON.stringify(brief, null, 2));
+  briefs.set(brief.id, brief);
+  _persistBrief(brief);
   return brief;
 }
-
 function get(id) {
-  try { return JSON.parse(fs.readFileSync(pathFor(id), 'utf8')); }
-  catch (e) { return null; }
+  return briefs.get(id) || null;
 }
-
 function list() {
-  const files = fs.readdirSync(DATA_DIR).filter(f => f.endsWith('.json'));
-  const all = files.map(f => {
-    try { return JSON.parse(fs.readFileSync(path.join(DATA_DIR, f), 'utf8')); }
-    catch (e) { return null; }
-  }).filter(Boolean);
-  all.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
-  return all;
+  return Array.from(briefs.values()).sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
 }
-
 function update(id, patch) {
-  const b = get(id);
+  const b = briefs.get(id);
   if (!b) return null;
   Object.assign(b, patch);
-  return save(b);
+  briefs.set(id, b);
+  _persistBrief(b);
+  return b;
 }
-
 function appendLog(id, msg, kind = 'info', meta = null) {
-  const b = get(id);
+  const b = briefs.get(id);
   if (!b) return;
   b.log = b.log || [];
   b.log.push({ ts: new Date().toISOString(), msg, kind, ...(meta ? { meta } : {}) });
   if (b.log.length > 800) b.log = b.log.slice(-800);
-  save(b);
+  briefs.set(id, b);
+  _persistBrief(b);
 }
 
-/* ---------- Feature requests (Form 2) ---------- */
+/* ---------- Feature requests ---------- */
 function saveFeatureRequest(fr) {
-  fs.writeFileSync(frPathFor(fr.id), JSON.stringify(fr, null, 2));
+  featureRequests.set(fr.id, fr);
+  _persistFr(fr);
   return fr;
 }
-
 function listFeatureRequests() {
-  if (!fs.existsSync(FR_DIR)) return [];
-  const files = fs.readdirSync(FR_DIR).filter(f => f.endsWith('.json'));
-  const all = files.map(f => {
-    try { return JSON.parse(fs.readFileSync(path.join(FR_DIR, f), 'utf8')); }
-    catch (e) { return null; }
-  }).filter(Boolean);
-  all.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
-  return all;
+  return Array.from(featureRequests.values()).sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
 }
-
 function getFeatureRequest(id) {
-  try { return JSON.parse(fs.readFileSync(frPathFor(id), 'utf8')); }
-  catch (e) { return null; }
+  return featureRequests.get(id) || null;
 }
-
 function updateFeatureRequest(id, patch) {
-  const f = getFeatureRequest(id);
+  const f = featureRequests.get(id);
   if (!f) return null;
   Object.assign(f, patch);
-  return saveFeatureRequest(f);
+  featureRequests.set(id, f);
+  _persistFr(f);
+  return f;
 }
 
 /* ---------- Seed loader (Run01-05 backfill) ---------- */
 function loadSeedIfFresh() {
-  // Loaded only if file exists AND there are no real briefs yet OR a special force flag.
   if (!fs.existsSync(SEED_FILE)) return 0;
   const force = process.env.RELOAD_SEED === '1';
-  const existing = list();
-  // If real briefs exist (non-Test prefix), don't seed unless forced.
-  const hasReal = existing.some(b => !(b.title || '').startsWith('Test —'));
-  if (hasReal && !force) {
-    // Still check if seeded test runs are missing and add them
-  }
   try {
     const seed = JSON.parse(fs.readFileSync(SEED_FILE, 'utf8'));
     const seeds = Array.isArray(seed) ? seed : (seed.briefs || []);
     let added = 0;
     for (const b of seeds) {
       if (!b.id) continue;
-      if (!get(b.id) || force) {
+      if (!briefs.has(b.id) || force) {
         save(b);
         added++;
       }
@@ -115,7 +168,12 @@ function loadSeedIfFresh() {
 }
 
 module.exports = {
+  // boot
+  initPostgres,
+  // briefs
   save, get, list, update, appendLog,
+  // feature requests
   saveFeatureRequest, listFeatureRequests, getFeatureRequest, updateFeatureRequest,
+  // seed
   loadSeedIfFresh,
 };

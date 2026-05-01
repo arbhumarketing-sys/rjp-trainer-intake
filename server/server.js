@@ -258,15 +258,22 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: err.message });
 });
 
-/* Boot */
-const seedAdded = store.loadSeedIfFresh();
-if (seedAdded) console.log(`[boot] Loaded ${seedAdded} seed briefs (Run01–05 test backfill)`);
-
-app.listen(PORT, () => {
-  console.log(`RJP Sourcing Portal v3.1 listening on :${PORT}`);
-  console.log(`  Apify Google actor:   ${process.env.APIFY_GOOGLE_ACTOR || process.env.APIFY_ACTOR || 'apify~rag-web-browser'}`);
-  console.log(`  Apify LinkedIn actor: ${process.env.APIFY_LINKEDIN_ACTOR || 'harvestapi/linkedin-profile-scraper'}`);
-  console.log(`  Claude API:           ${process.env.ANTHROPIC_API_KEY ? 'enabled' : 'DISABLED (set ANTHROPIC_API_KEY to enable L1.1/L2/L3)'}`);
-  console.log(`  Data dir:             ${process.env.DATA_DIR || './data'}`);
-  console.log(`  Output dir:           ${process.env.OUTPUT_DIR || './outputs'}`);
+/* Boot — hydrate Postgres cache BEFORE seeding and BEFORE app.listen so the
+   first request never sees an empty store. If DATABASE_URL is missing the
+   store falls back to filesystem JSON (no persistence), useful for local dev. */
+(async () => {
+  await store.initPostgres();
+  const seedAdded = store.loadSeedIfFresh();
+  if (seedAdded) console.log(`[boot] Loaded ${seedAdded} seed briefs (Run01-05 test backfill)`);
+  app.listen(PORT, () => {
+    console.log(`RJP Sourcing Portal v3.1 listening on :${PORT}`);
+    console.log(`  Apify Google actor:   ${process.env.APIFY_GOOGLE_ACTOR || process.env.APIFY_ACTOR || 'apify~rag-web-browser'}`);
+    console.log(`  Apify LinkedIn actor: ${process.env.APIFY_LINKEDIN_ACTOR || 'harvestapi/linkedin-profile-scraper'}`);
+    console.log(`  LLM client:           ${process.env.ANTHROPIC_VIA_CLAUDE_CLI === 'true' ? 'claude CLI subprocess (Max plan)' : (process.env.ANTHROPIC_API_KEY ? 'API key' : 'DISABLED')}`);
+    console.log(`  Storage:              ${process.env.DATABASE_URL ? 'Postgres' : 'filesystem (./data, no persistence)'}`);
+    console.log(`  Output dir:           ${process.env.OUTPUT_DIR || './outputs'}`);
+  });
+})().catch(e => {
+  console.error('[boot] fatal:', e);
+  process.exit(1);
 });

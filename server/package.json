@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "description": "Orchestrates Apify scrapers and serves the RJP Infotek trainer-sourcing client portal.",
   "main": "server.js",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js"
@@ -14,6 +16,7 @@
     "cors": "^2.8.5",
     "exceljs": "^4.4.0",
     "express": "^4.19.2",
-    "jsonwebtoken": "^9.0.2"
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.20.0"
   }
 }
