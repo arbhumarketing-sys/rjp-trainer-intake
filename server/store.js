@@ -26,6 +26,13 @@ const SEED_FILE = path.join(__dirname, 'seed-briefs.json');
 const briefs = new Map();             // id -> brief object
 const featureRequests = new Map();    // id -> fr object
 
+// Track briefs whose last persist failed. Reconciliation tick retries these.
+// Required by the "back-end must never silently fail" guarantee — if Postgres
+// blips during a write, the in-memory cache is correct but the DB diverges.
+// Without this set, a redeploy after a blip would lose the most recent state.
+const _dirtyBriefs = new Set();
+const _dirtyFrs = new Set();
+
 let pool = null;
 
 /* ---------- Postgres bootstrapping ---------- */
@@ -70,8 +77,10 @@ async function initPostgres() {
 }
 
 // Fire-and-forget DB write. Logs but doesn't throw — the in-memory cache is
-// the source of truth for the request response, and a failed DB write will
-// retry on the next save() of the same record.
+// the source of truth for the request response. A failed write puts the brief
+// in `_dirtyBriefs`; the reconciliation tick (startReconciliation) retries
+// every 5 min so the DB eventually converges. This means a Postgres blip
+// during a brief's run won't lose the brief on the next redeploy.
 function _persistBrief(b) {
   if (!pool) return;
   pool.query(
@@ -79,7 +88,11 @@ function _persistBrief(b) {
      VALUES ($1, $2::jsonb, COALESCE(($2::jsonb->>'createdAt')::timestamptz, NOW()))
      ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`,
     [b.id, JSON.stringify(b)]
-  ).catch(e => console.warn('[store] persistBrief failed:', e.message));
+  ).then(() => _dirtyBriefs.delete(b.id))
+   .catch(e => {
+     console.warn('[store] persistBrief failed (queued for reconciliation):', e.message);
+     _dirtyBriefs.add(b.id);
+   });
 }
 
 function _persistFr(f) {
@@ -89,7 +102,48 @@ function _persistFr(f) {
      VALUES ($1, $2::jsonb, COALESCE(($2::jsonb->>'createdAt')::timestamptz, NOW()))
      ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`,
     [f.id, JSON.stringify(f)]
-  ).catch(e => console.warn('[store] persistFr failed:', e.message));
+  ).then(() => _dirtyFrs.delete(f.id))
+   .catch(e => {
+     console.warn('[store] persistFr failed (queued for reconciliation):', e.message);
+     _dirtyFrs.add(f.id);
+   });
+}
+
+// Periodic retry of failed writes. Called once at boot from server.js.
+function startReconciliation() {
+  if (!pool) {
+    console.log('[store] reconciliation disabled (no Postgres pool — using in-memory only).');
+    return;
+  }
+  const intervalMs = parseInt(process.env.RECONCILE_INTERVAL_MS || (5 * 60 * 1000), 10);
+  setInterval(() => {
+    if (_dirtyBriefs.size === 0 && _dirtyFrs.size === 0) return;
+    const briefIds = Array.from(_dirtyBriefs);
+    const frIds = Array.from(_dirtyFrs);
+    if (briefIds.length) {
+      console.log(`[store] reconciliation retry: ${briefIds.length} dirty brief(s)`);
+      for (const id of briefIds) {
+        const b = briefs.get(id);
+        if (b) _persistBrief(b);
+        else _dirtyBriefs.delete(id);
+      }
+    }
+    if (frIds.length) {
+      console.log(`[store] reconciliation retry: ${frIds.length} dirty FR(s)`);
+      for (const id of frIds) {
+        const f = featureRequests.get(id);
+        if (f) _persistFr(f);
+        else _dirtyFrs.delete(id);
+      }
+    }
+  }, intervalMs);
+  console.log(`[store] reconciliation tick started (every ${intervalMs / 60000} min).`);
+}
+
+// Health surface for /healthz — lets the watchdog and any external pinger
+// see if writes are silently piling up.
+function getDirtyCount() {
+  return { briefs: _dirtyBriefs.size, featureRequests: _dirtyFrs.size };
 }
 
 /* ---------- Briefs (sync API) ---------- */
@@ -168,6 +222,8 @@ function loadSeedIfFresh() {
 module.exports = {
   // boot
   initPostgres,
+  startReconciliation,
+  getDirtyCount,
   // briefs
   save, get, list, update, appendLog,
   // feature requests

@@ -1,5 +1,5 @@
 /**
- * RJP Sourcing Portal — Express server v3.1.
+ * RJP Sourcing Portal — Express server v3.2.
  *
  * Routes:
  *   POST /api/auth/login           { password } -> { token, user }
@@ -24,7 +24,7 @@ const crypto = require('crypto');
 
 const auth = require('./auth');
 const store = require('./store');
-const { runPipeline, runWithFeedback, OUTPUT_DIR, DEFAULT_BIGFIRM_EXCLUSIONS } = require('./pipeline');
+const { runPipeline, runWithFeedback, startWatchdog, OUTPUT_DIR, DEFAULT_BIGFIRM_EXCLUSIONS } = require('./pipeline');
 
 let Anthropic = null;
 try { Anthropic = require('@anthropic-ai/sdk').default || require('@anthropic-ai/sdk'); } catch (_) {}
@@ -56,8 +56,21 @@ app.use(cors({
   credentials: false,
 }));
 
-/* Liveness */
-app.get('/healthz', (req, res) => res.json({ ok: true, ts: new Date().toISOString(), version: '3.1' }));
+/* Liveness — extended with dirty-write count and uptime so the keep-warm
+   pinger and any external monitor can detect silent persistence drift. */
+const _bootedAt = Date.now();
+app.get('/healthz', (req, res) => {
+  const dirty = (typeof store.getDirtyCount === 'function') ? store.getDirtyCount() : { briefs: 0, featureRequests: 0 };
+  res.json({
+    ok: true,
+    ts: new Date().toISOString(),
+    version: '3.2',
+    uptimeSec: Math.round((Date.now() - _bootedAt) / 1000),
+    storage: process.env.DATABASE_URL ? 'postgres' : 'filesystem',
+    dirty,
+    llm: process.env.ANTHROPIC_VIA_CLAUDE_CLI === 'true' ? 'claude-cli' : (process.env.ANTHROPIC_API_KEY ? 'api' : 'disabled'),
+  });
+});
 
 /* Auth */
 app.post('/api/auth/login', (req, res) => {
@@ -266,18 +279,23 @@ app.use((err, req, res, next) => {
 
 /* Boot — hydrate Postgres cache BEFORE seeding and BEFORE app.listen so the
    first request never sees an empty store. If DATABASE_URL is missing the
-   store falls back to filesystem JSON (no persistence), useful for local dev. */
+   store falls back to filesystem JSON (no persistence), useful for local dev.
+   After listen, start the watchdog (catches stuck briefs) and the
+   reconciliation tick (retries failed Postgres writes). Both are part of the
+   "back-end must never silently fail" guarantee. */
 (async () => {
   await store.initPostgres();
   const seedAdded = store.loadSeedIfFresh();
   if (seedAdded) console.log(`[boot] Loaded ${seedAdded} seed briefs (Run01-05 test backfill)`);
   app.listen(PORT, () => {
-    console.log(`RJP Sourcing Portal v3.1 listening on :${PORT}`);
+    console.log(`RJP Sourcing Portal v3.2 listening on :${PORT}`);
     console.log(`  Apify Google actor:   ${process.env.APIFY_GOOGLE_ACTOR || process.env.APIFY_ACTOR || 'apify~rag-web-browser'}`);
     console.log(`  Apify LinkedIn actor: ${process.env.APIFY_LINKEDIN_ACTOR || 'harvestapi/linkedin-profile-scraper'}`);
     console.log(`  LLM client:           ${process.env.ANTHROPIC_VIA_CLAUDE_CLI === 'true' ? 'claude CLI subprocess (Max plan)' : (process.env.ANTHROPIC_API_KEY ? 'API key' : 'DISABLED')}`);
     console.log(`  Storage:              ${process.env.DATABASE_URL ? 'Postgres' : 'filesystem (./data, no persistence)'}`);
     console.log(`  Output dir:           ${process.env.OUTPUT_DIR || './outputs'}`);
+    startWatchdog();
+    store.startReconciliation();
   });
 })().catch(e => {
   console.error('[boot] fatal:', e);

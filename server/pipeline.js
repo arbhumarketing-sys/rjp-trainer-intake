@@ -1,5 +1,5 @@
 /**
- * RJP Sourcing Pipeline — v3.1
+ * RJP Sourcing Pipeline — v3.2
  *
  * Rebuilt against the team's manual SOP + operator feedback.
  * Replaces the v3 single-source Apify pipeline. Key structural changes:
@@ -745,7 +745,7 @@ function buildDecision(p, bp) {
 /* ---------- Excel ---------- */
 async function buildXlsx(brief, accepted, rejected, bp, timings) {
   const wb = new ExcelJS.Workbook();
-  wb.creator = 'RJP Sourcing Portal v3.1';
+  wb.creator = 'RJP Sourcing Portal v3.2';
   wb.created = new Date();
 
   // 1. Candidates
@@ -1038,6 +1038,24 @@ async function runPipeline(briefId, opts = {}) {
     const stat = fs.statSync(file);
     const totalElapsed = elapsedSec(t0);
 
+    // Low-yield detection: don't silently produce an empty/thin Excel. Frontend
+    // shows a yellow banner with the lowYieldReason so RJP knows the run isn't
+    // deceptively "successful". Threshold = 3 because below that, the brief is
+    // almost certainly missing the right keywords or has too-strict exclusions.
+    const lowYieldThreshold = parseInt(process.env.LOW_YIELD_THRESHOLD || '3', 10);
+    const lowYield = capped.length < lowYieldThreshold;
+    let lowYieldReason = null;
+    if (capped.length === 0) {
+      if (normalised.length === 0) {
+        lowYieldReason = 'No candidates discovered from any source — Apify may have returned no results, or every tier failed (check log for retry warnings). Try broader keywords or check the Apify token.';
+      } else {
+        lowYieldReason = `Discovered ${normalised.length} candidates but ALL were filtered out. Most common cause: too-strict must-NOT terms, or the geo gate rejecting non-LinkedIn-enriched profiles. Review the Rejected (audit) tab.`;
+      }
+    } else if (capped.length < lowYieldThreshold) {
+      lowYieldReason = `Only ${capped.length} candidates surfaced (target ≥${lowYieldThreshold}). Consider broadening keywords, relaxing must-NOT, or switching to Niche mode if the tech is rare.`;
+    }
+    if (lowYield) logAndSave(briefId, `Low-yield run: ${lowYieldReason}`, 'warn');
+
     store.update(briefId, {
       status: 'complete',
       outputFile: path.basename(file),
@@ -1047,8 +1065,10 @@ async function runPipeline(briefId, opts = {}) {
       totalElapsed,
       acceptedSample: capped.slice(0, 10),
       rejectedSample: rejected.slice(0, 10),
+      lowYield,
+      lowYieldReason,
     });
-    logAndSave(briefId, `Pipeline complete — ${capped.length} candidates, ${(stat.size / 1024).toFixed(1)} KB, ${totalElapsed}s total`);
+    logAndSave(briefId, `Pipeline complete — ${capped.length} candidates, ${(stat.size / 1024).toFixed(1)} KB, ${totalElapsed}s total${lowYield ? ' [LOW YIELD]' : ''}`);
   } catch (e) {
     console.error('[pipeline error]', e);
     logAndSave(briefId, 'Pipeline failed: ' + e.message, 'err');
@@ -1073,4 +1093,45 @@ async function runWithFeedback(briefId, feedbackText) {
   return runPipeline(briefId);
 }
 
-module.exports = { runPipeline, runWithFeedback, OUTPUT_DIR, DEFAULT_BIGFIRM_EXCLUSIONS };
+/* ---------- Watchdog: catch briefs stuck in non-terminal state ---------- */
+// A brief is "stuck" if its status is one of {queued, discovery, scoring,
+// packaging, preview} AND its most-recent log entry is older than the stuck
+// threshold. Threshold default 25 min — comfortably above the worst-case
+// niche TAT target of 12 min plus the LinkedIn enrichment 240s waitSecs and
+// the 3-attempt retry budget (~5 min worst case per failed call).
+//
+// When the watchdog fires, the brief gets marked `failed` with an explanatory
+// error AND a `retryable: true` flag so the frontend Retry button is offered.
+// This is the safety net for the "back-end should never silently hang" rule —
+// if the Node process restarted mid-pipeline, or if a runaway external call
+// never returned, the brief no longer sits in 'discovery' indefinitely.
+const STUCK_TIMEOUT_MS = parseInt(process.env.BRIEF_STUCK_TIMEOUT_MS || (25 * 60 * 1000), 10);
+const WATCHDOG_INTERVAL_MS = parseInt(process.env.WATCHDOG_INTERVAL_MS || 60000, 10);
+const NON_TERMINAL_STATUSES = new Set(['queued', 'discovery', 'scoring', 'packaging', 'preview']);
+
+function startWatchdog() {
+  setInterval(() => {
+    const now = Date.now();
+    const stuck = [];
+    for (const b of store.list()) {
+      if (!NON_TERMINAL_STATUSES.has(b.status)) continue;
+      const lastLog = (b.log || []).slice(-1)[0];
+      const lastTs = lastLog && lastLog.ts ? new Date(lastLog.ts).getTime() : new Date(b.createdAt || now).getTime();
+      const stuckFor = now - lastTs;
+      if (stuckFor > STUCK_TIMEOUT_MS) stuck.push({ b, mins: Math.round(stuckFor / 60000) });
+    }
+    for (const { b, mins } of stuck) {
+      const reason = `Watchdog auto-failed: brief stuck in '${b.status}' for ${mins} min with no log activity. Likely a process restart or a hung external call. Click Retry to re-run.`;
+      store.update(b.id, {
+        status: 'failed',
+        error: reason,
+        retryable: true,
+        log: (b.log || []).concat([{ ts: new Date().toISOString(), msg: reason, kind: 'err' }]),
+      });
+      console.warn(`[watchdog] auto-failed ${b.id} after ${mins}min in ${b.status}`);
+    }
+  }, WATCHDOG_INTERVAL_MS);
+  console.log(`[watchdog] started — checking every ${WATCHDOG_INTERVAL_MS / 1000}s, stuck threshold ${STUCK_TIMEOUT_MS / 60000} min.`);
+}
+
+module.exports = { runPipeline, runWithFeedback, startWatchdog, OUTPUT_DIR, DEFAULT_BIGFIRM_EXCLUSIONS };
