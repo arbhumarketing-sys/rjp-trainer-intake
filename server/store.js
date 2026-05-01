@@ -27,7 +27,6 @@ const briefs = new Map();             // id -> brief object
 const featureRequests = new Map();    // id -> fr object
 
 let pool = null;
-let dbReady = false;
 
 /* ---------- Postgres bootstrapping ---------- */
 async function initPostgres() {
@@ -66,7 +65,6 @@ async function initPostgres() {
   for (const row of r1.rows) briefs.set(row.id, row.data);
   const r2 = await pool.query('SELECT id, data FROM feature_requests');
   for (const row of r2.rows) featureRequests.set(row.id, row.data);
-  dbReady = true;
   console.log(`[store] Postgres ready — hydrated ${briefs.size} briefs, ${featureRequests.size} feature requests.`);
   return true;
 }

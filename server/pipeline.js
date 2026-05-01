@@ -445,11 +445,24 @@ function classifySignal(it, bp, harvest) {
   const blob = (it.title + ' ' + it.text).toLowerCase();
   const blob2 = blob + ' ' + (harvest && harvest.headline ? harvest.headline.toLowerCase() : '') + ' ' + (harvest && harvest.about ? harvest.about.toLowerCase() : '');
 
-  // 1. Big-firm + custom + client + principal exclusion FIRST
+  // 1. Big-firm + custom + client + principal exclusion FIRST.
+  // Word-boundary match so "internship at TCS" matches but "tcsworld" doesn't.
+  // Skip "ex-X" / "former X" / "previously at X" — past employees are bookable
+  // (they're the most common freelance trainer pool in India).
   for (const ex of bp.exclusions) {
     if (!ex) continue;
-    const e = ex.toLowerCase();
-    if (blob2.includes(e)) return { signal: 'BIG_FIRM', reason: `Excluded company match: "${ex}"` };
+    const e = ex.toLowerCase().trim();
+    if (!e) continue;
+    const pat = new RegExp('\\b' + e.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i');
+    const m = pat.exec(blob2);
+    if (!m) continue;
+    // Look at ~30 chars before the match for "ex-", "former", "previously at",
+    // "earlier worked at", "served at", "worked with"
+    const before = blob2.slice(Math.max(0, m.index - 30), m.index);
+    if (/(ex[-\s]|former(ly)?\s|previous(ly)?\s+(at\s+)?|earlier\s+(at|worked|with)\s+|once\s+(worked\s+)?at\s+|past\s+at\s+)\s*$/i.test(before)) {
+      continue; // past employee — don't reject
+    }
+    return { signal: 'BIG_FIRM', reason: `Excluded company match: "${ex}"` };
   }
 
   // 1.5. Client-side must-NOT post-filter (belt-and-braces — Google's `-"term"` operator

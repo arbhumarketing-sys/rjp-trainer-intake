@@ -198,12 +198,18 @@ app.get('/api/briefs/:id/output', auth.requireAuth, (req, res) => {
   const b = store.get(req.params.id);
   if (!b) return res.status(404).send('not found');
   if (!b.outputFile) return res.status(409).send('output not ready');
-  const file = path.join(OUTPUT_DIR, b.outputFile);
-  if (!fs.existsSync(file)) return res.status(404).send('file missing');
+  // Defence in depth: pipeline already stores `path.basename(file)` so b.outputFile
+  // is a leaf filename, but verify the resolved path lives under OUTPUT_DIR so a
+  // future bug (or hand-edited DB row) can't read /etc/passwd.
+  const resolved = path.resolve(OUTPUT_DIR, b.outputFile);
+  const outRoot = path.resolve(OUTPUT_DIR) + path.sep;
+  if (!resolved.startsWith(outRoot) || !fs.existsSync(resolved)) {
+    return res.status(404).send('file missing');
+  }
   const safeTitle = (b.title || 'sourcing-output').replace(/[^a-zA-Z0-9-_ ]/g, '_').slice(0, 80);
   res.setHeader('Content-Disposition', `attachment; filename="${safeTitle} - ${b.id}.xlsx"`);
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  fs.createReadStream(file).pipe(res);
+  fs.createReadStream(resolved).pipe(res);
 });
 
 /* ---------- Feature requests (Form 2 — admin dashboard only, no push) ---------- */

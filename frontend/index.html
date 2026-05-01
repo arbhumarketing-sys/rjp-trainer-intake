@@ -504,7 +504,6 @@
 /* CONFIG                                                       */
 /* ============================================================ */
 const API_BASE = 'https://rjp-trainer-intake-server.onrender.com';   // Render service for the RJP trainer-intake portal
-const TOKEN_KEY = 'rjp_portal_token_v2';
 const REPO_CACHE = 'rjp_portal_repo_v2';
 
 const DOMAIN_OPTIONS = [
@@ -569,29 +568,13 @@ async function api(method, path, body) {
   let res;
   try { res = await fetch(url, opts); }
   catch (e) { throw new Error('Cannot reach the server. Is it running? ' + e.message); }
-  if (res.status === 401) { logout(); throw new Error('Session expired — sign in again.'); }
+  if (res.status === 401) { throw new Error('Authorization rejected by server.'); }
   if (!res.ok) {
     const text = await res.text();
     throw new Error('Server error (' + res.status + '): ' + text.slice(0, 200));
   }
   const ct = res.headers.get('Content-Type') || '';
   return ct.includes('application/json') ? res.json() : res;
-}
-
-async function login(password) {
-  const r = await api('POST', '/api/auth/login', { password });
-  if (r && r.token) {
-    state.token = r.token;
-    localStorage.setItem(TOKEN_KEY, state.token);
-    return true;
-  }
-  return false;
-}
-function logout() {
-  localStorage.removeItem(TOKEN_KEY);
-  state.token = null; state.briefs = []; state.view = 'home'; state.activeBriefId = null;
-  stopPolling();
-  render();
 }
 
 async function loadBriefs() {
@@ -630,55 +613,10 @@ function stopPolling() { if (state.pollTimer) clearInterval(state.pollTimer); st
 /* ============================================================ */
 function render() {
   const root = document.getElementById('app');
-  if (!state.token) {
-    root.innerHTML = renderLogin();
-    wireLogin();
-    return;
-  }
   root.innerHTML = renderShell();
   wireShell();
   renderSidebar();
   renderMain();
-}
-
-/* ---------- LOGIN ---------- */
-function renderLogin() {
-  return `
-    <div class="login-shade">
-      <div class="login-card">
-        <div class="login-brand">
-          <div class="login-mark">RJ</div>
-          <span>Trainer Sourcing Portal</span>
-        </div>
-        <h2>Sign in</h2>
-        <p class="lead">RJP Infotek team. Use the shared password from your team admin.</p>
-        <form id="login-form">
-          <div class="field"><label class="lbl">Shared password</label>
-            <input type="password" id="pwd" autofocus required />
-            <div class="err" id="login-err">Wrong password.</div>
-          </div>
-          <button class="btn primary btn-wide" type="submit">Sign in</button>
-        </form>
-      </div>
-    </div>
-  `;
-}
-function wireLogin() {
-  document.getElementById('login-form').addEventListener('submit', async e => {
-    e.preventDefault();
-    const pwd = document.getElementById('pwd').value;
-    const errBox = document.querySelector('#login-form .field');
-    errBox.classList.remove('has-error');
-    try {
-      const ok = await login(pwd);
-      if (!ok) { errBox.classList.add('has-error'); return; }
-      await loadBriefs();
-      render();
-    } catch (e) {
-      errBox.classList.add('has-error');
-      document.getElementById('login-err').textContent = e.message;
-    }
-  });
 }
 
 /* ---------- SHELL ---------- */
@@ -694,7 +632,6 @@ function renderShell() {
         <span class="topbar-clock" id="clock"></span>
         <button class="btn ghost" id="btn-home">Repository</button>
         <button class="btn ghost" id="btn-admin">Admin</button>
-        <button class="btn ghost" id="btn-logout">Sign out</button>
         <button class="btn primary" id="btn-new">+ New brief</button>
       </div>
     </header>
@@ -710,7 +647,6 @@ function renderShell() {
 function wireShell() {
   document.getElementById('btn-home').addEventListener('click', () => { state.view = 'home'; state.activeBriefId = null; stopPolling(); renderMain(); renderSidebar(); });
   document.getElementById('btn-admin').addEventListener('click', async () => { state.view = 'admin'; state.activeBriefId = null; stopPolling(); await loadFeatureRequests(); renderMain(); renderSidebar(); });
-  document.getElementById('btn-logout').addEventListener('click', logout);
   document.getElementById('btn-new').addEventListener('click', () => { state.view = 'new'; state.step = 1; state.draft = defaultDraft(); renderMain(); renderSidebar(); });
   startClock();
 }
