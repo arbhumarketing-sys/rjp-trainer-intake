@@ -141,12 +141,32 @@ function normalizeBrief(brief) {
   const clientPrincipal = (brief.clientPrincipal || '').trim();
   const customExclusions = (brief.customExclusions || []).map(s => s.trim()).filter(Boolean);
   const searchMode = brief.searchMode === 'niche' ? 'niche' : 'std';
+  // v3.3: source-toggle defaults. New v3.3 sources are ON by default so
+  // existing briefs (created before the new keys existed) automatically benefit
+  // from broader pool coverage. Operators can disable individual sources
+  // per-brief via the Step 3 source-toggles UI.
+  const DEFAULT_SOURCES = {
+    linkedin: true,
+    urbanpro: true,
+    youtube: true,
+    udemy: true,
+    blogs: true,
+    // v3.3 additions
+    indianPlatforms: true,        // Edureka, Simplilearn, GreatLearning, UpGrad, AnalyticsVidhya, Whizlabs, KodeKloud
+    authorityDirectories: true,   // Microsoft MVP, Google GDE, AWS Hero, Salesforce Trailblazer, CNCF Ambassador
+    coursePlatforms: true,        // Coursera, Pluralsight, LinkedIn Learning, O'Reilly
+    meetup: true,                 // meetup.com — community organizers (high training-delivery signal)
+    eventbrite: true,             // workshop hosts in India
+    github: true,                 // educational repo authors (best for dev/tech roles)
+  };
   const advanced = Object.assign({
     queryDepth: searchMode === 'niche' ? MAX_QUERIES_NICHE : MAX_QUERIES_STD,
-    sources: { linkedin: true, urbanpro: true, youtube: true, udemy: true, blogs: true },
     weights: { signal: 40, bucket: 30, verify: 15, book: 15 },
     qualityCap: QUALITY_CAP_DEFAULT,
   }, brief.advanced || {});
+  // Merge sources separately so a brief that sets only e.g. `{linkedin:true}`
+  // doesn't wipe defaults for the v3.3 keys it doesn't know about.
+  advanced.sources = Object.assign({}, DEFAULT_SOURCES, advanced.sources || {});
   // Pull persistent exclusions from store. Used so RJP doesn't have to retype
   // "InfraCloud", "AnalyticsVidhya" etc. on every brief once they've added
   // them to the always-exclude list. See store.getPersistentExclusions.
@@ -266,8 +286,12 @@ function buildGoogleQueries(brief, bp) {
       });
     }
     if (sites.blogs) {
+      // v3.3: refined to target specific high-signal blogging platforms
+      // instead of generic "anything not LinkedIn". Hashnode is Indian-founded
+      // and dev-heavy; Dev.to and Medium have strong Indian tech-writer pools;
+      // Substack catches paid-newsletter authors who often run cohorts.
       perKw.push({
-        query: `${kwClean} freelance trainer India -site:linkedin.com`,
+        query: `${kwClean} trainer India site:hashnode.com OR site:dev.to OR site:medium.com OR site:substack.com`,
         keyword: kw, variant: 'blog', source: 'blogs', tier: 'L1.3',
       });
     }
@@ -283,6 +307,80 @@ function buildGoogleQueries(brief, bp) {
       perKw.push({
         query: `${kwClean} course India site:udemy.com`,
         keyword: kw, variant: 'udemy-instructor', source: 'udemy', tier: 'L4',
+      });
+    }
+    // v3.3 — Indian training platforms. These ARE corporate trainers (it's
+    // their literal job). Combined into one OR-query so we don't burn 7
+    // separate queries per keyword when the cap is 12.
+    if (sites.indianPlatforms) {
+      perKw.push({
+        query: `${kwClean} instructor India site:edureka.co OR site:simplilearn.com OR site:greatlearning.com OR site:upgrad.com OR site:analyticsvidhya.com OR site:whizlabs.com OR site:kodekloud.com`,
+        keyword: kw, variant: 'indian-platform', source: 'indian-platforms', tier: 'L1.3',
+      });
+    }
+    // v3.3 — Authority directories. Vendor-curated MVP / GDE / Hero lists.
+    // Highest signal-to-noise of any source — these people have been
+    // explicitly vetted by Microsoft / Google / AWS / Salesforce / CNCF.
+    if (sites.authorityDirectories) {
+      perKw.push({
+        query: `${kwClean} India site:mvp.microsoft.com OR site:developers.google.com/community OR site:aws.amazon.com/heroes OR site:trailblazer.me OR site:cncf.io/people`,
+        keyword: kw, variant: 'authority', source: 'authority-directory', tier: 'L1.3',
+      });
+    }
+    // v3.3 — Course platforms (instructor pages on Coursera, Pluralsight,
+    // LinkedIn Learning, O'Reilly). Good for vetted senior-level trainers,
+    // strong India representation on Pluralsight especially.
+    if (sites.coursePlatforms) {
+      perKw.push({
+        query: `${kwClean} instructor India site:coursera.org OR site:pluralsight.com OR site:linkedin.com/learning OR site:oreilly.com`,
+        keyword: kw, variant: 'course-platform', source: 'course-platform', tier: 'L1.3',
+      });
+    }
+    // v3.3 — Meetup organizers. Indian meetup organizers have to teach for
+    // free; that filters for genuine pedagogical skill. L4 tier because
+    // mixing speakers and trainers — classifier handles the distinction.
+    if (sites.meetup) {
+      perKw.push({
+        query: `${kwClean} meetup organizer India site:meetup.com`,
+        keyword: kw, variant: 'meetup', source: 'meetup', tier: 'L4',
+      });
+    }
+    // v3.3 — Eventbrite workshop hosts. Pay-per-event hosts are usually
+    // bookable trainers with their own brand.
+    if (sites.eventbrite) {
+      perKw.push({
+        query: `${kwClean} workshop India site:eventbrite.com`,
+        keyword: kw, variant: 'eventbrite', source: 'eventbrite', tier: 'L4',
+      });
+    }
+    // v3.3 — GitHub educational repos. The author of a repo with topic
+    // 'tutorial' / 'course' / 'bootcamp' is by definition teaching. L4
+    // tier; only useful for tech/dev domains (not SAP, not HR).
+    if (sites.github) {
+      perKw.push({
+        query: `${kwClean} tutorial OR course OR bootcamp India site:github.com`,
+        keyword: kw, variant: 'github-edu', source: 'github', tier: 'L4',
+      });
+    }
+    // v3.3 — Domain-specific authority queries. Fire only when brief.domain
+    // matches; these are highly-targeted but only useful for those domains.
+    const dom = (brief.domain || '').toLowerCase();
+    if (dom.includes('salesforce')) {
+      perKw.push({
+        query: `${kwClean} Ranger India site:trailblazer.me`,
+        keyword: kw, variant: 'salesforce-ranger', source: 'trailblazer', tier: 'L1.3',
+      });
+    }
+    if (dom.includes('data') || dom.includes('ml ') || dom.includes(' ml') || dom.includes('ai') || dom.includes('machine') || dom.includes('science')) {
+      perKw.push({
+        query: `${kwClean} India site:huggingface.co OR site:kaggle.com`,
+        keyword: kw, variant: 'ml-community', source: 'ml-community', tier: 'L1.3',
+      });
+    }
+    if (dom.includes('sap')) {
+      perKw.push({
+        query: `${kwClean} India site:community.sap.com OR site:sap-press.com`,
+        keyword: kw, variant: 'sap-community', source: 'sap-community', tier: 'L1.3',
       });
     }
     primaryByKw.push(perKw);

@@ -641,7 +641,12 @@ function defaultDraft() {
     clientPrincipal: '',                // v3.1 — exclusion: their existing principal (e.g. HCL)
     customExclusions: '',               // v3.1 — extra companies, one per line
     advancedOpen: false,
-    advanced: { queryDepth: 12, sources: { linkedin: true, urbanpro: true, youtube: true, udemy: true, blogs: true } },
+    advanced: { queryDepth: 12, sources: {
+      linkedin: true, urbanpro: true, youtube: true, udemy: true, blogs: true,
+      // v3.3 — new source toggles, all default ON
+      indianPlatforms: true, authorityDirectories: true, coursePlatforms: true,
+      meetup: true, eventbrite: true, github: true,
+    } },
     steering: '',
     outputFormat: 'xlsx',
     deadline: '',
@@ -1371,9 +1376,22 @@ function renderStep3() {
             </div>
             <div class="field" style="margin:0;">
               <label class="lbl">Source toggles</label>
+              <div class="hint">All default ON. Disable individually if you want a tighter, faster brief.</div>
               <div class="source-toggles">
-                ${['linkedin', 'urbanpro', 'youtube', 'udemy', 'blogs'].map(s => `
-                  <label class="chip ${sources[s] ? 'on' : ''}"><input type="checkbox" data-src="${s}" ${sources[s] ? 'checked' : ''}> ${s}</label>
+                ${[
+                  { k: 'linkedin',             l: 'LinkedIn' },
+                  { k: 'urbanpro',             l: 'UrbanPro / Sulekha' },
+                  { k: 'blogs',                l: 'Tech blogs (Hashnode, Dev.to, Medium, Substack)' },
+                  { k: 'youtube',              l: 'YouTube tutorials' },
+                  { k: 'udemy',                l: 'Udemy courses' },
+                  { k: 'indianPlatforms',      l: 'Indian training platforms (Edureka, Simplilearn, GreatLearning, UpGrad, AnalyticsVidhya, Whizlabs, KodeKloud)' },
+                  { k: 'authorityDirectories', l: 'Authority directories (MS MVP, Google GDE, AWS Hero, Salesforce Trailblazer, CNCF)' },
+                  { k: 'coursePlatforms',      l: "Course platforms (Coursera, Pluralsight, LinkedIn Learning, O'Reilly)" },
+                  { k: 'meetup',               l: 'Meetup.com organizers' },
+                  { k: 'eventbrite',           l: 'Eventbrite workshop hosts' },
+                  { k: 'github',               l: 'GitHub educational repos' },
+                ].map(({ k, l }) => `
+                  <label class="chip ${sources[k] !== false ? 'on' : ''}" title="${esc(l)}"><input type="checkbox" data-src="${k}" ${sources[k] !== false ? 'checked' : ''}> ${esc(l)}</label>
                 `).join('')}
               </div>
             </div>
