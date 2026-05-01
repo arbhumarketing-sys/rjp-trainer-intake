@@ -207,20 +207,36 @@ app.post('/api/briefs/parse', auth.requireAuth, async (req, res) => {
   }
 });
 
-app.get('/api/briefs/:id/output', auth.requireAuth, (req, res) => {
+app.get('/api/briefs/:id/output', auth.requireAuth, async (req, res) => {
   const b = store.get(req.params.id);
   if (!b) return res.status(404).send('not found');
   if (!b.outputFile) return res.status(409).send('output not ready');
-  // Defence in depth: pipeline already stores `path.basename(file)` so b.outputFile
-  // is a leaf filename, but verify the resolved path lives under OUTPUT_DIR so a
-  // future bug (or hand-edited DB row) can't read /etc/passwd.
+
+  const safeTitle = (b.title || 'sourcing-output').replace(/[^a-zA-Z0-9-_ ]/g, '_').slice(0, 80);
+  const downloadName = `${safeTitle} - ${b.id}.xlsx`;
+
+  // Try Postgres first — bytes there survive dyno restarts. Falls back to FS
+  // for briefs created before the saveOutput hook was added (or if Postgres
+  // is somehow unavailable).
+  try {
+    const stored = await store.getOutput(b.id);
+    if (stored && stored.data) {
+      res.setHeader('Content-Disposition', `attachment; filename="${downloadName}"`);
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      return res.end(stored.data);
+    }
+  } catch (e) {
+    console.warn('[server] getOutput from Postgres failed, falling back to FS:', e.message);
+  }
+
+  // Filesystem fallback. Defence in depth: verify resolved path stays under
+  // OUTPUT_DIR so a future bug can't read /etc/passwd.
   const resolved = path.resolve(OUTPUT_DIR, b.outputFile);
   const outRoot = path.resolve(OUTPUT_DIR) + path.sep;
   if (!resolved.startsWith(outRoot) || !fs.existsSync(resolved)) {
-    return res.status(404).send('file missing');
+    return res.status(404).send('file missing — Excel was not persisted to Postgres and the local copy is gone (likely a dyno restart). Re-run the brief to regenerate.');
   }
-  const safeTitle = (b.title || 'sourcing-output').replace(/[^a-zA-Z0-9-_ ]/g, '_').slice(0, 80);
-  res.setHeader('Content-Disposition', `attachment; filename="${safeTitle} - ${b.id}.xlsx"`);
+  res.setHeader('Content-Disposition', `attachment; filename="${downloadName}"`);
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   fs.createReadStream(resolved).pipe(res);
 });

@@ -1558,6 +1558,17 @@ async function runPipeline(briefId, opts = {}) {
     const stat = fs.statSync(file);
     const totalElapsed = elapsedSec(t0);
 
+    // Persist the Excel bytes to Postgres so it survives dyno restarts.
+    // Render's free-tier filesystem is ephemeral — without this, every brief
+    // becomes un-downloadable as soon as the dyno spins down (15 min idle).
+    try {
+      const bytes = fs.readFileSync(file);
+      await store.saveOutput(briefId, path.basename(file), bytes);
+      logAndSave(briefId, `[output] persisted Excel to Postgres (${(bytes.length / 1024).toFixed(1)} KB) — survives dyno restart`);
+    } catch (e) {
+      logAndSave(briefId, `[output] failed to persist Excel to Postgres: ${e.message}. File still on local FS but won't survive a Render restart.`, 'warn');
+    }
+
     // Low-yield detection: don't silently produce an empty/thin Excel. Frontend
     // shows a yellow banner with the lowYieldReason so RJP knows the run isn't
     // deceptively "successful". Threshold = 3 because below that, the brief is

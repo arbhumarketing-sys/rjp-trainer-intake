@@ -73,6 +73,13 @@ async function initPostgres() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS persistent_exclusions_created_at_idx ON persistent_exclusions(created_at DESC);
+    CREATE TABLE IF NOT EXISTS brief_outputs (
+      brief_id TEXT PRIMARY KEY,
+      filename TEXT NOT NULL,
+      data BYTEA NOT NULL,
+      size_bytes INTEGER,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
   `);
   // Hydrate caches.
   const r1 = await pool.query('SELECT id, data FROM briefs');
@@ -185,6 +192,42 @@ function appendLog(id, msg, kind = 'info', meta = null) {
   _persistBrief(b);
 }
 
+/* ---------- Brief outputs (v3.2 fix — survive dyno restarts) ---------- */
+// Render's free-tier filesystem is ephemeral — anything written to ./outputs
+// vanishes the next time the dyno spins down (15 min idle) or redeploys.
+// Without this, RJP submits a brief at 11am, comes back at 2pm to download,
+// and gets a 404. Persisting the Excel bytes in Postgres survives both
+// restarts and redeploys.
+async function saveOutput(briefId, filename, bytes) {
+  if (!pool) return;
+  try {
+    await pool.query(
+      `INSERT INTO brief_outputs (brief_id, filename, data, size_bytes)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (brief_id) DO UPDATE
+       SET filename = EXCLUDED.filename, data = EXCLUDED.data, size_bytes = EXCLUDED.size_bytes`,
+      [briefId, filename, bytes, bytes.length]
+    );
+  } catch (e) {
+    console.warn('[store] saveOutput failed:', e.message);
+  }
+}
+
+async function getOutput(briefId) {
+  if (!pool) return null;
+  try {
+    const r = await pool.query(
+      'SELECT filename, data, size_bytes FROM brief_outputs WHERE brief_id = $1',
+      [briefId]
+    );
+    if (r.rows.length === 0) return null;
+    return { filename: r.rows[0].filename, data: r.rows[0].data, sizeBytes: r.rows[0].size_bytes };
+  } catch (e) {
+    console.warn('[store] getOutput failed:', e.message);
+    return null;
+  }
+}
+
 /* ---------- Persistent exclusions (v3.2) ---------- */
 // Always-exclude terms that survive across all briefs. RJP adds InfraCloud,
 // AnalyticsVidhya, etc. once instead of typing them into customExclusions
@@ -272,6 +315,8 @@ module.exports = {
   getDirtyCount,
   // briefs
   save, get, list, update, appendLog,
+  // brief outputs (Postgres-backed Excel bytes — survives dyno restarts)
+  saveOutput, getOutput,
   // feature requests
   saveFeatureRequest, listFeatureRequests, getFeatureRequest, updateFeatureRequest,
   // persistent exclusions (v3.2)
