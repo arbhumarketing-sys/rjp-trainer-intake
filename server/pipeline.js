@@ -110,7 +110,17 @@ function normalizeBrief(brief) {
     ...(clientPrincipal ? [clientPrincipal] : []),
     ...customExclusions,
   ]);
-  return { keywords, must, should, mustNot, clientCompany, clientPrincipal, customExclusions, searchMode, advanced, exclusions };
+  // Steering — operator's free-text direction + accumulated Form-1 feedback. Capped
+  // so multi-revision feedback histories don't blow the LLM prompt budget. Latest
+  // feedback is always at the end (runWithFeedback appends), so tail-slice.
+  const steering = (brief.steering || '').slice(-2500);
+  return { keywords, must, should, mustNot, clientCompany, clientPrincipal, customExclusions, searchMode, advanced, exclusions, steering };
+}
+
+// Convert steering text into a prompt-safe directive block. Returns '' when empty.
+function steeringHint(steering) {
+  if (!steering || !steering.trim()) return '';
+  return `\n\nOPERATOR STEERING (apply when ranking / generating candidates):\n${steering.trim()}`;
 }
 
 function buildKeywordsFromRoles(brief) {
@@ -310,7 +320,7 @@ async function claudeKnowledgeCall(briefId, kw, bp) {
   const client = getAnthropic();
   if (!client) return [];
   try {
-    const sys = `You are a sourcing assistant for a B2B trainer placement firm in India. Given a technology/skill, return named freelance corporate trainers, independent instructors, consultants, SMEs, or architects in India who deliver training. Do NOT return conference speakers without training-delivery evidence. Do NOT return employees of: ${bp.exclusions.slice(0, 8).join(', ')}.`;
+    const sys = `You are a sourcing assistant for a B2B trainer placement firm in India. Given a technology/skill, return named freelance corporate trainers, independent instructors, consultants, SMEs, or architects in India who deliver training. Do NOT return conference speakers without training-delivery evidence. Do NOT return employees of: ${bp.exclusions.slice(0, 8).join(', ')}.${steeringHint(bp.steering)}`;
     const user = `Technology / skill: ${kw}\nLocation: India only.\nMode: ${bp.searchMode === 'niche' ? 'niche (rare tech, prefer founders/principals of small firms)' : 'standard'}\nReturn 5-10 named candidates with: name, LinkedIn URL (best guess if known), 1-line evidence of training-delivery (course, workshop, repeated training engagements). Format as JSON array: [{"name":"","linkedin":"","evidence":""}].`;
     const resp = await client.messages.create({
       model: CLAUDE_SMART,
@@ -332,11 +342,11 @@ async function claudeKnowledgeCall(briefId, kw, bp) {
   }
 }
 
-async function claudeAdjacentTech(briefId, kw) {
+async function claudeAdjacentTech(briefId, kw, bp) {
   const client = getAnthropic();
   if (!client) return [];
   try {
-    const sys = `You suggest adjacent technologies whose practitioners often deliver training in a target technology. Concise, specific, India-trainer-pool-aware.`;
+    const sys = `You suggest adjacent technologies whose practitioners often deliver training in a target technology. Concise, specific, India-trainer-pool-aware.${steeringHint(bp && bp.steering)}`;
     const user = `Target technology: ${kw}\nReturn 3 adjacent/related technologies whose Indian trainers could plausibly deliver this. JSON: ["adj1","adj2","adj3"].`;
     const resp = await client.messages.create({
       model: CLAUDE_FAST,
@@ -353,11 +363,11 @@ async function claudeAdjacentTech(briefId, kw) {
   }
 }
 
-async function claudeInstitutes(briefId, kw) {
+async function claudeInstitutes(briefId, kw, bp) {
   const client = getAnthropic();
   if (!client) return [];
   try {
-    const sys = `You list Indian training institutes that deliver corporate training in specific technologies. Concise, verifiable.`;
+    const sys = `You list Indian training institutes that deliver corporate training in specific technologies. Concise, verifiable.${steeringHint(bp && bp.steering)}`;
     const user = `Technology: ${kw}\nList up to 6 Indian institutes that deliver corporate training in this. JSON: [{"name":"","website":"","city":""}].`;
     const resp = await client.messages.create({
       model: CLAUDE_FAST,
@@ -828,7 +838,7 @@ async function runPipeline(briefId, opts = {}) {
     if (!previewMode && (bp.searchMode === 'niche' || normalised.length < 10) && hasLlmClient()) {
       const stop = stageStart('L2 Adjacent tech');
       for (const kw of bp.keywords) {
-        const adj = await claudeAdjacentTech(briefId, kw);
+        const adj = await claudeAdjacentTech(briefId, kw, bp);
         logAndSave(briefId, `[L2] Adjacent tech for "${kw}": ${adj.join(', ') || '(none)'}`);
         for (const a of adj) {
           // Run a single LinkedIn query per adjacent tech
@@ -846,7 +856,7 @@ async function runPipeline(briefId, opts = {}) {
     if (!previewMode && bp.searchMode === 'niche' && normalised.length < 8 && hasLlmClient()) {
       const stop = stageStart('L3 Institutes');
       for (const kw of bp.keywords) {
-        const inst = await claudeInstitutes(briefId, kw);
+        const inst = await claudeInstitutes(briefId, kw, bp);
         logAndSave(briefId, `[L3] Institutes for "${kw}" → ${inst.length}`);
         allItems = allItems.concat(inst);
       }
