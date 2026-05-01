@@ -523,7 +523,7 @@ const OUTPUT_OPTIONS = [
 /* STATE                                                        */
 /* ============================================================ */
 let state = {
-  token: localStorage.getItem(TOKEN_KEY) || null,
+  token: 'open',  // auth removed 2026-05-01; sentinel keeps Authorization header machinery happy
   briefs: [],
   featureRequests: [],
   view: 'home',         // home | new | detail | admin
