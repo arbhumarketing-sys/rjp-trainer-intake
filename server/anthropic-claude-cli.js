@@ -40,7 +40,41 @@
 const { spawn } = require('child_process');
 
 const CLI_BIN          = process.env.CLAUDE_CLI_BIN || 'claude';
-const CLI_TIMEOUT_MS   = parseInt(process.env.CLAUDE_CLI_TIMEOUT_MS || '120000', 10);
+const CLI_TIMEOUT_MS   = parseInt(process.env.CLAUDE_CLI_TIMEOUT_MS || '180000', 10);
+
+// Global CLI semaphore — caps total concurrent `claude` subprocesses across
+// the WHOLE Node process. Each subprocess loads its own Node + Claude Code
+// SDK (~50-100 MB resident) and competes with siblings for CPU. On Render
+// free tier (512 MB cap, shared CPU), more than 2-3 concurrent CLI calls
+// causes OOM-kill / page-swap, which manifests as 120s subprocess timeouts
+// and "claude CLI timed out" warnings in brief logs. This semaphore
+// protects against that for both single-brief parallelism (e.g., classifier
+// concurrency) AND multi-brief parallelism (RJP submitting 2 briefs while
+// 1 is still running).
+const MAX_CONCURRENT_CLI = parseInt(process.env.MAX_CONCURRENT_CLI || '2', 10);
+let _activeCli = 0;
+const _cliQueue = [];
+
+function _acquireCliSlot() {
+  return new Promise(resolve => {
+    if (_activeCli < MAX_CONCURRENT_CLI) {
+      _activeCli++;
+      return resolve();
+    }
+    _cliQueue.push(() => { _activeCli++; resolve(); });
+  });
+}
+
+function _releaseCliSlot() {
+  _activeCli--;
+  const next = _cliQueue.shift();
+  if (next) next();
+}
+
+// Lightweight surface for telemetry / health endpoints
+function getCliQueueStats() {
+  return { active: _activeCli, waiting: _cliQueue.length, max: MAX_CONCURRENT_CLI };
+}
 
 /**
  * Flatten the SDK's `messages: [{role, content}]` array into a single string
@@ -67,8 +101,22 @@ function flattenMessages(messages) {
  * prompt. Resolves with the raw CLI JSON; rejects with an Error whose .status
  * mimics the SDK's HTTP status convention so existing retry/circuit-breaker
  * logic in message-generator.js works unchanged.
+ *
+ * Wrapped in a global semaphore (_acquireCliSlot / _releaseCliSlot) so the
+ * total number of in-flight `claude` subprocesses across the Node process
+ * stays under MAX_CONCURRENT_CLI. The actual subprocess work is delegated
+ * to _spawnClaudeCli; this outer function only handles the queueing.
  */
-function callClaudeCli({ model, system, prompt, timeoutMs }) {
+async function callClaudeCli(args) {
+  await _acquireCliSlot();
+  try {
+    return await _spawnClaudeCli(args);
+  } finally {
+    _releaseCliSlot();
+  }
+}
+
+function _spawnClaudeCli({ model, system, prompt, timeoutMs }) {
   return new Promise((resolve, reject) => {
     const args = ['--print', '--output-format', 'json', '--model', model];
     if (system) {
@@ -204,6 +252,7 @@ class ClaudeCliClient {
 
 module.exports = {
   ClaudeCliClient,
+  getCliQueueStats,
   // exported for tests
   _flattenMessages: flattenMessages,
   _cliToSdkResponse: cliToSdkResponse,

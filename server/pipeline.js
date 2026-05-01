@@ -806,7 +806,10 @@ const REJECTED_SIGNALS = new Set(['SPEAKER_ONLY', 'BIG_FIRM', 'NON_INDIA', 'MUST
 // FREELANCE_TRAINER distinctions, semi-implicit training claims, etc.
 
 const LLM_CLASSIFIER_BATCH_SIZE = parseInt(process.env.LLM_CLASSIFIER_BATCH_SIZE || '15', 10);
-const LLM_CLASSIFIER_CONCURRENCY = parseInt(process.env.LLM_CLASSIFIER_CONCURRENCY || '3', 10);
+// Default 2 to match the global CLI semaphore (anthropic-claude-cli.js MAX_CONCURRENT_CLI).
+// Any higher and individual brief batches still queue at the global semaphore — extra
+// per-brief concurrency just buys nothing and complicates reasoning about resource use.
+const LLM_CLASSIFIER_CONCURRENCY = parseInt(process.env.LLM_CLASSIFIER_CONCURRENCY || '2', 10);
 const VALID_SIGNALS = new Set(Object.keys(SIGNAL_POINTS));
 
 async function classifySignalsBatched(itemsWithHarvest, bp, briefId) {
@@ -1689,4 +1692,32 @@ function startWatchdog() {
   console.log(`[watchdog] started — checking every ${WATCHDOG_INTERVAL_MS / 1000}s, stuck threshold ${STUCK_TIMEOUT_MS / 60000} min.`);
 }
 
-module.exports = { runPipeline, runWithFeedback, startWatchdog, OUTPUT_DIR, DEFAULT_BIGFIRM_EXCLUSIONS };
+/* ---------- Boot reaper (v3.2): catch orphans from a previous-life dyno ---------- */
+// Render free tier spins down after 15 min idle and restarts on traffic.
+// If a dyno restart happens mid-pipeline, the brief is left in a non-terminal
+// state in Postgres but no process is running it — it's an orphan. The 25-min
+// watchdog will eventually catch it but that's a slow recovery.
+//
+// On boot, any brief in {queued, discovery, scoring, packaging, preview} MUST
+// be an orphan: the only Node process that could update its state is THIS
+// process, which just started. Mark them failed immediately with
+// retryable:true so the Retry button does the right thing for RJP.
+function reapOrphansOnBoot() {
+  const now = new Date().toISOString();
+  let reaped = 0;
+  for (const b of store.list()) {
+    if (!NON_TERMINAL_STATUSES.has(b.status)) continue;
+    const reason = `Pipeline orphaned by server restart. The brief was in '${b.status}' state when the dyno restarted; no process is now running it. Click Retry to re-run.`;
+    store.update(b.id, {
+      status: 'failed',
+      error: reason,
+      retryable: true,
+      log: (b.log || []).concat([{ ts: now, msg: reason, kind: 'err' }]),
+    });
+    reaped++;
+    console.warn(`[boot reaper] auto-failed orphan ${b.id} (was in ${b.status})`);
+  }
+  if (reaped) console.log(`[boot reaper] marked ${reaped} orphan(s) as failed.`);
+}
+
+module.exports = { runPipeline, runWithFeedback, startWatchdog, reapOrphansOnBoot, OUTPUT_DIR, DEFAULT_BIGFIRM_EXCLUSIONS };

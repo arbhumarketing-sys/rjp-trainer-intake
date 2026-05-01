@@ -24,15 +24,20 @@ const crypto = require('crypto');
 
 const auth = require('./auth');
 const store = require('./store');
-const { runPipeline, runWithFeedback, startWatchdog, OUTPUT_DIR, DEFAULT_BIGFIRM_EXCLUSIONS } = require('./pipeline');
+const { runPipeline, runWithFeedback, startWatchdog, reapOrphansOnBoot, OUTPUT_DIR, DEFAULT_BIGFIRM_EXCLUSIONS } = require('./pipeline');
 
 let Anthropic = null;
 try { Anthropic = require('@anthropic-ai/sdk').default || require('@anthropic-ai/sdk'); } catch (_) {}
 
 const _USE_CLI = process.env.ANTHROPIC_VIA_CLAUDE_CLI === 'true';
 let ClaudeCliClient = null;
+let getCliQueueStats = () => null;
 if (_USE_CLI) {
-  try { ClaudeCliClient = require('./anthropic-claude-cli').ClaudeCliClient; } catch (_) {}
+  try {
+    const cli = require('./anthropic-claude-cli');
+    ClaudeCliClient = cli.ClaudeCliClient;
+    if (cli.getCliQueueStats) getCliQueueStats = cli.getCliQueueStats;
+  } catch (_) {}
 }
 function makeLlmClient() {
   if (_USE_CLI) return ClaudeCliClient ? new ClaudeCliClient() : null;
@@ -61,6 +66,7 @@ app.use(cors({
 const _bootedAt = Date.now();
 app.get('/healthz', (req, res) => {
   const dirty = (typeof store.getDirtyCount === 'function') ? store.getDirtyCount() : { briefs: 0, featureRequests: 0 };
+  const cliQueue = getCliQueueStats();
   res.json({
     ok: true,
     ts: new Date().toISOString(),
@@ -69,6 +75,7 @@ app.get('/healthz', (req, res) => {
     storage: process.env.DATABASE_URL ? 'postgres' : 'filesystem',
     dirty,
     llm: process.env.ANTHROPIC_VIA_CLAUDE_CLI === 'true' ? 'claude-cli' : (process.env.ANTHROPIC_API_KEY ? 'api' : 'disabled'),
+    cliQueue,
   });
 });
 
@@ -360,11 +367,17 @@ app.use((err, req, res, next) => {
   await store.initPostgres();
   const seedAdded = store.loadSeedIfFresh();
   if (seedAdded) console.log(`[boot] Loaded ${seedAdded} seed briefs (Run01-05 test backfill)`);
+
+  // Reap orphans BEFORE accepting new traffic. Any brief in a non-terminal
+  // state at boot is necessarily an orphan from a previous (now-dead) dyno.
+  reapOrphansOnBoot();
+
   app.listen(PORT, () => {
     console.log(`RJP Sourcing Portal v3.2 listening on :${PORT}`);
     console.log(`  Apify Google actor:   ${process.env.APIFY_GOOGLE_ACTOR || process.env.APIFY_ACTOR || 'apify~rag-web-browser'}`);
     console.log(`  Apify LinkedIn actor: ${process.env.APIFY_LINKEDIN_ACTOR || 'harvestapi/linkedin-profile-scraper'}`);
     console.log(`  LLM client:           ${process.env.ANTHROPIC_VIA_CLAUDE_CLI === 'true' ? 'claude CLI subprocess (Max plan)' : (process.env.ANTHROPIC_API_KEY ? 'API key' : 'DISABLED')}`);
+    console.log(`  CLI semaphore:        max ${process.env.MAX_CONCURRENT_CLI || '2'} concurrent subprocesses`);
     console.log(`  Storage:              ${process.env.DATABASE_URL ? 'Postgres' : 'filesystem (./data, no persistence)'}`);
     console.log(`  Output dir:           ${process.env.OUTPUT_DIR || './outputs'}`);
     startWatchdog();
