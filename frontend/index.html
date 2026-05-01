@@ -1746,6 +1746,12 @@ function renderDetail(m) {
           </div>
         `).join('')}
       </div>` : ''}
+
+      <div class="panel" style="margin-top:24px;border-color:var(--line);">
+        <h3 style="color:var(--ink-3);font-size:13px;font-weight:500;text-transform:uppercase;letter-spacing:0.04em;">Danger zone</h3>
+        <div class="panel-sub">Permanently delete this brief and its Excel output. Cannot be undone. Use only for test runs, mistakes, or briefs RJP no longer needs in the repository.</div>
+        <button class="btn danger" id="btn-delete-brief">Delete this brief</button>
+      </div>
     </div>
   `;
 
@@ -1795,6 +1801,31 @@ function renderDetail(m) {
       await loadBriefs(); startPolling(); renderMain(); renderSidebar();
       toast('Full pipeline running.', 'success');
     } catch (e) { toast(e.message, 'error'); fullBtn.disabled = false; fullBtn.textContent = 'Run full pipeline'; }
+  });
+
+  // v3.2 — danger zone delete handler
+  const delBtn = document.getElementById('btn-delete-brief');
+  if (delBtn) delBtn.addEventListener('click', async () => {
+    const title = b.title || '(untitled brief)';
+    if (!confirm(`Permanently delete "${title}" (${b.id}) and its Excel output?\n\nThis cannot be undone.`)) return;
+    delBtn.disabled = true;
+    delBtn.textContent = 'Deleting…';
+    try {
+      await api('DELETE', '/api/briefs/' + encodeURIComponent(b.id));
+      // Drop from local state and navigate home
+      state.briefs = state.briefs.filter(x => x.id !== b.id);
+      state.activeBriefId = null;
+      state.liveBrief = null;
+      stopPolling();
+      state.view = 'home';
+      renderMain();
+      renderSidebar();
+      toast(`Deleted "${title.slice(0, 50)}".`, 'success');
+    } catch (e) {
+      toast(e.message, 'error');
+      delBtn.disabled = false;
+      delBtn.textContent = 'Delete this brief';
+    }
   });
 }
 

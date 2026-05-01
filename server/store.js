@@ -192,6 +192,24 @@ function appendLog(id, msg, kind = 'info', meta = null) {
   _persistBrief(b);
 }
 
+// v3.2: hard-delete a brief and its persisted Excel. Used by admin cleanup
+// (test briefs, mistakes, abandoned drafts). Removes from in-memory cache,
+// briefs table, AND brief_outputs table so we don't leak orphan binary rows.
+async function deleteBrief(id) {
+  const had = briefs.delete(id);
+  _dirtyBriefs.delete(id);
+  if (pool) {
+    try {
+      await pool.query('DELETE FROM briefs WHERE id = $1', [id]);
+      await pool.query('DELETE FROM brief_outputs WHERE brief_id = $1', [id]);
+    } catch (e) {
+      console.warn('[store] deleteBrief Postgres failed:', e.message);
+      // Cache is already deleted; the next save (if any) re-creates the DB row.
+    }
+  }
+  return had;
+}
+
 /* ---------- Brief outputs (v3.2 fix — survive dyno restarts) ---------- */
 // Render's free-tier filesystem is ephemeral — anything written to ./outputs
 // vanishes the next time the dyno spins down (15 min idle) or redeploys.
@@ -314,7 +332,7 @@ module.exports = {
   startReconciliation,
   getDirtyCount,
   // briefs
-  save, get, list, update, appendLog,
+  save, get, list, update, appendLog, deleteBrief,
   // brief outputs (Postgres-backed Excel bytes — survives dyno restarts)
   saveOutput, getOutput,
   // feature requests

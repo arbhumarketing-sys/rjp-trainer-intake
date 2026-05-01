@@ -156,6 +156,26 @@ app.post('/api/briefs/:id/retry', auth.requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+// v3.2: hard-delete a brief and its persisted Excel.
+// Refuses to delete a brief that's still running (status in non-terminal set)
+// to avoid orphaning a pipeline mid-flight that would then write to a deleted
+// record and recreate it. Operator must wait for completion or use the
+// watchdog to fail it first.
+app.delete('/api/briefs/:id', auth.requireAuth, async (req, res) => {
+  const b = store.get(req.params.id);
+  if (!b) return res.status(404).json({ error: 'not found' });
+  const inFlight = ['queued', 'discovery', 'scoring', 'packaging', 'preview'].includes(b.status);
+  if (inFlight && req.query.force !== '1') {
+    return res.status(409).json({
+      error: `brief is still ${b.status}; wait for completion or pass ?force=1`,
+      status: b.status,
+    });
+  }
+  const had = await store.deleteBrief(req.params.id);
+  if (!had) return res.status(404).json({ error: 'not found (already deleted?)' });
+  res.json({ ok: true, deleted: req.params.id });
+});
+
 /* Pre-flight preview — 1 query, 5 samples (Pre-flight wow feature) */
 app.post('/api/briefs/:id/preview', auth.requireAuth, (req, res) => {
   const b = store.get(req.params.id);

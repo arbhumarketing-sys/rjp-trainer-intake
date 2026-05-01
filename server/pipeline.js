@@ -806,6 +806,7 @@ const REJECTED_SIGNALS = new Set(['SPEAKER_ONLY', 'BIG_FIRM', 'NON_INDIA', 'MUST
 // FREELANCE_TRAINER distinctions, semi-implicit training claims, etc.
 
 const LLM_CLASSIFIER_BATCH_SIZE = parseInt(process.env.LLM_CLASSIFIER_BATCH_SIZE || '15', 10);
+const LLM_CLASSIFIER_CONCURRENCY = parseInt(process.env.LLM_CLASSIFIER_CONCURRENCY || '3', 10);
 const VALID_SIGNALS = new Set(Object.keys(SIGNAL_POINTS));
 
 async function classifySignalsBatched(itemsWithHarvest, bp, briefId) {
@@ -814,28 +815,46 @@ async function classifySignalsBatched(itemsWithHarvest, bp, briefId) {
     if (briefId) logAndSave(briefId, `Classifier: regex mode (LLM disabled or unavailable)`);
     return itemsWithHarvest.map(({ it, harvest }) => classifySignalRegex(it, bp, harvest));
   }
-  if (briefId) logAndSave(briefId, `Classifier: LLM mode (Haiku), ${itemsWithHarvest.length} profiles in batches of ${LLM_CLASSIFIER_BATCH_SIZE}`);
+
+  // v3.2 (post-E2E observation): each Claude CLI batch takes ~50s due to
+  // subprocess startup + API latency, NOT the ~9s originally estimated. With
+  // 100+ candidates and 7-10 batches, sequential classification took 5-8 min.
+  // Parallel worker pool with concurrency=3 cuts that to 2-3 min. Memory
+  // headroom on Render free tier is fine (~50MB per CLI subprocess, base
+  // Node ~150MB, total ~300MB of 512MB cap).
+  const batches = [];
+  for (let i = 0; i < itemsWithHarvest.length; i += LLM_CLASSIFIER_BATCH_SIZE) {
+    batches.push({ offset: i, items: itemsWithHarvest.slice(i, i + LLM_CLASSIFIER_BATCH_SIZE) });
+  }
+  const concurrency = Math.max(1, Math.min(LLM_CLASSIFIER_CONCURRENCY, batches.length));
+  if (briefId) logAndSave(briefId, `Classifier: LLM mode (Haiku), ${itemsWithHarvest.length} profiles in ${batches.length} batch(es) of ${LLM_CLASSIFIER_BATCH_SIZE}, concurrency=${concurrency}`);
 
   const results = new Array(itemsWithHarvest.length);
-  for (let i = 0; i < itemsWithHarvest.length; i += LLM_CLASSIFIER_BATCH_SIZE) {
-    const batch = itemsWithHarvest.slice(i, i + LLM_CLASSIFIER_BATCH_SIZE);
-    let batchResults;
-    try {
-      batchResults = await classifySignalLLM(batch, bp, briefId, i);
-    } catch (e) {
-      if (briefId) logAndSave(briefId, `[classifier] LLM batch ${i}-${i + batch.length} failed (${(e.message || '').slice(0, 80)}); falling back to regex for these ${batch.length} profile(s)`, 'warn');
-      batchResults = batch.map(({ it, harvest }) => classifySignalRegex(it, bp, harvest));
-    }
-    for (let j = 0; j < batch.length; j++) {
-      // Per-profile fallback: if LLM returned an unknown signal or missing entry, regex it.
-      const cls = batchResults[j];
-      if (cls && VALID_SIGNALS.has(cls.signal)) {
-        results[i + j] = cls;
-      } else {
-        results[i + j] = classifySignalRegex(batch[j].it, bp, batch[j].harvest);
+  let nextBatch = 0;
+  const worker = async () => {
+    while (true) {
+      const bidx = nextBatch++;
+      if (bidx >= batches.length) return;
+      const { offset, items } = batches[bidx];
+      let batchResults;
+      try {
+        batchResults = await classifySignalLLM(items, bp, briefId, offset);
+      } catch (e) {
+        if (briefId) logAndSave(briefId, `[classifier] LLM batch ${offset}-${offset + items.length} failed (${(e.message || '').slice(0, 80)}); falling back to regex for these ${items.length} profile(s)`, 'warn');
+        batchResults = items.map(({ it, harvest }) => classifySignalRegex(it, bp, harvest));
+      }
+      for (let j = 0; j < items.length; j++) {
+        // Per-profile fallback: if LLM returned an unknown signal or missing entry, regex it.
+        const cls = batchResults[j];
+        if (cls && VALID_SIGNALS.has(cls.signal)) {
+          results[offset + j] = cls;
+        } else {
+          results[offset + j] = classifySignalRegex(items[j].it, bp, items[j].harvest);
+        }
       }
     }
-  }
+  };
+  await Promise.all(Array.from({ length: concurrency }, worker));
   return results;
 }
 
