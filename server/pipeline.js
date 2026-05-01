@@ -524,17 +524,43 @@ function normaliseItem(item) {
   };
 }
 
-function dedupeItems(items) {
-  const seen = new Set();
-  const out = [];
+// v3.2: replaces simple dedupe with source-merging. Same identity (URL or
+// title) appearing in multiple tiers/sources = stronger signal. We keep the
+// richest copy (longest text, most metadata) and tag it with the count of
+// distinct sources for compositeScore to award a bonus. Same effective dedupe
+// behaviour for downstream consumers — just no longer discards information.
+function mergeBySource(items) {
+  const groups = new Map();
   for (const it of items) {
     const key = (it.url || it.title || '').toLowerCase().slice(0, 250);
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    out.push(it);
+    if (!key) continue;
+    const sourceTag = it.tier && it.source ? `${it.tier}:${it.source}` : (it.tier || it.source || 'unknown');
+    if (!groups.has(key)) {
+      groups.set(key, { ...it, _sources: new Set([sourceTag]) });
+    } else {
+      const merged = groups.get(key);
+      merged._sources.add(sourceTag);
+      // Prefer the entry with more text
+      if ((it.text || '').length > (merged.text || '').length) {
+        merged.text = it.text;
+      }
+      // Prefer non-empty title
+      if (it.title && (!merged.title || it.title.length > merged.title.length)) {
+        merged.title = it.title;
+      }
+      // L1.1 (Claude knowledge) carries narrative evidence — keep it if found later
+      if (it.claudeNote && !merged.claudeNote) merged.claudeNote = it.claudeNote;
+    }
   }
-  return out;
+  return Array.from(groups.values()).map(it => {
+    const sources = Array.from(it._sources);
+    delete it._sources;
+    return { ...it, multiSource: sources.length, sources };
+  });
 }
+
+// Backwards-compat alias — older code paths could still call dedupeItems.
+const dedupeItems = mergeBySource;
 
 /* ---------- Speaker-aware classifier (the v3.1 rewrite) ---------- */
 //
@@ -944,22 +970,30 @@ function compositeScore(p, weights) {
   const bktPts = (p.bucketFit / 3) * w.bucket;
   const verPts = (p.verify / 3) * w.verify;
   const bkPts  = (p.book / 3) * w.book;
-  return Math.round((sigPts + bktPts + verPts + bkPts) * norm);
+  // v3.2: multi-source bonus — appearance in N>1 distinct tiers is a confidence signal.
+  // +2 per extra source, capped at +6 (max 4 sources counted).
+  const ms = (p.multiSource && p.multiSource > 1) ? Math.min(p.multiSource - 1, 3) * 2 : 0;
+  return Math.round((sigPts + bktPts + verPts + bkPts) * norm + ms);
 }
 
 /* ---------- Reason-traceable accept/reject ---------- */
 function buildDecision(p, bp) {
+  // v3.2: tag multi-source confirmations into the reason so RJP can see why
+  // a candidate scored higher than its raw signal would suggest.
+  const multiSrcSuffix = (p.multiSource && p.multiSource > 1)
+    ? ` · cross-confirmed in ${p.multiSource} sources (${(p.sources || []).join(', ')})`
+    : '';
   if (REJECTED_SIGNALS.has(p.signal)) {
     return {
       decision: 'reject',
-      decision_reason: p.reason || 'Rejected — no trainer evidence',
+      decision_reason: (p.reason || 'Rejected — no trainer evidence') + multiSrcSuffix,
       decision_url: p.url || '',
       decision_snippet: (p.text || '').slice(0, 240),
     };
   }
   return {
     decision: 'accept',
-    decision_reason: p.reason || 'Trainer evidence present',
+    decision_reason: (p.reason || 'Trainer evidence present') + multiSrcSuffix,
     decision_url: p.url || '',
     decision_snippet: (p.text || '').slice(0, 240),
   };
