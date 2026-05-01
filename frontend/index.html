@@ -440,6 +440,52 @@
 
   .empty-side { color: var(--ink-3); font-size: 12.5px; padding: 12px 8px; line-height: 1.55; }
 
+  /* ============ v3.1 widgets ============ */
+  .mode-toggle { display: inline-flex; border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; }
+  .mode-toggle button { padding: 7px 14px; font-size: 12px; font-weight: 500; color: var(--ink-3); background: var(--panel); border-right: 1px solid var(--line); }
+  .mode-toggle button:last-child { border-right: none; }
+  .mode-toggle button.on { background: var(--accent); color: white; }
+
+  .panel-collapsible { border-top: 1px solid var(--line-soft); margin-top: 14px; padding-top: 12px; }
+  .panel-collapsible-head { display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: 4px 0; }
+  .panel-collapsible-head h4 { margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-3); font-weight: 600; }
+  .panel-collapsible-body { display: none; padding-top: 10px; }
+  .panel-collapsible.open .panel-collapsible-body { display: block; }
+  .panel-collapsible.open .panel-collapsible-head h4 { color: var(--accent); }
+
+  .advanced-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 18px; }
+  .source-toggles { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+
+  .tat-bar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--bg); border: 1px solid var(--line-soft); border-radius: var(--radius-sm); margin-bottom: 12px; font-size: 12.5px; }
+  .tat-bar strong { color: var(--ink); }
+  .tat-bar .tat-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); display: inline-block; }
+  .tat-bar.over .tat-dot { background: var(--bad); }
+  .tat-bar.done .tat-dot { background: var(--good); }
+
+  .sample-table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 8px; }
+  .sample-table th, .sample-table td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  .sample-table th { background: var(--bg); font-weight: 600; color: var(--ink-3); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .sample-table tr:hover td { background: var(--bg); }
+  .sample-table .signal-pill { display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em; }
+  .signal-TRAINER_EXPLICIT, .signal-FREELANCE_TRAINER { background: var(--good-soft); color: var(--good); }
+  .signal-TRAINER_IMPLIED, .signal-INSTITUTE { background: var(--accent-soft); color: var(--accent); }
+  .signal-PRACTITIONER { background: var(--warn-soft); color: var(--warn); }
+  .signal-SPEAKER_ONLY, .signal-BIG_FIRM, .signal-NON_INDIA, .signal-MUSTNOT_HIT, .signal-NOISE { background: var(--bad-soft); color: var(--bad); }
+
+  .feedback-form textarea { width: 100%; min-height: 80px; }
+  .frq-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+  .frq-item { padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: var(--radius-sm); display: grid; grid-template-columns: 1fr auto; gap: 6px 14px; font-size: 12.5px; }
+  .frq-item .frq-meta { color: var(--ink-3); font-size: 11.5px; }
+  .frq-actions { display: flex; gap: 6px; }
+  .frq-actions .btn { padding: 4px 10px; font-size: 11.5px; }
+  .frq-status-pending { color: var(--warn); }
+  .frq-status-approved { color: var(--good); }
+  .frq-status-rejected { color: var(--bad); }
+  .frq-status-shipped { color: var(--accent); }
+
+  .quick-intake { display: flex; gap: 8px; margin-top: 14px; }
+  .quick-intake input { flex: 1; }
+
   @media (max-width: 800px) {
     .layout { grid-template-columns: 1fr; }
     .sidebar { display: none; }
@@ -457,7 +503,7 @@
 /* ============================================================ */
 /* CONFIG                                                       */
 /* ============================================================ */
-const API_BASE = 'https://rjp-trainer-intake-server.onrender.com';   // set to e.g. 'https://rjp-sourcing-portal.onrender.com' if frontend hosted separately
+const API_BASE = 'https://rjp-trainer-intake-server.onrender.com';   // Render service for the RJP trainer-intake portal
 const TOKEN_KEY = 'rjp_portal_token_v2';
 const REPO_CACHE = 'rjp_portal_repo_v2';
 
@@ -479,23 +525,35 @@ const OUTPUT_OPTIONS = [
 let state = {
   token: localStorage.getItem(TOKEN_KEY) || null,
   briefs: [],
-  view: 'home',         // home | new | detail
+  featureRequests: [],
+  view: 'home',         // home | new | detail | admin
   step: 1,              // 1..4 inside new-brief flow
   activeBriefId: null,
   liveBrief: null,
   pollTimer: null,
   draft: defaultDraft(),
+  defaultExclusions: [],
 };
 function defaultDraft() {
   return {
     operatorName: '', operatorEmail: '',
     domain: '', customDomain: '',
+    keywords: '',                       // v3.1 — multi-keyword (one per line)
+    searchMode: 'std',                  // std | niche
     roles: [{ title: '', skill: '', bucket: '', count: 5 }],
     location: 'All India',
-    exclusions: '',
+    must: '',                           // v3.1 — boolean must-include
+    should: '',                         // v3.1 — boolean should-include
+    mustNot: '',                        // v3.1 — boolean must-NOT-include
+    clientCompany: '',                  // v3.1 — exclusion: client itself
+    clientPrincipal: '',                // v3.1 — exclusion: their existing principal (e.g. HCL)
+    customExclusions: '',               // v3.1 — extra companies, one per line
+    advancedOpen: false,
+    advanced: { queryDepth: 12, sources: { linkedin: true, urbanpro: true, youtube: true, udemy: true, blogs: true } },
     steering: '',
     outputFormat: 'xlsx',
     deadline: '',
+    quickIntake: '',                    // v3.1 — free-text one-liner intake
   };
 }
 
@@ -593,7 +651,7 @@ function renderLogin() {
           <span>Trainer Sourcing Portal</span>
         </div>
         <h2>Sign in</h2>
-        <p class="lead">RJP Infotek team. Use the shared password from Vijay or Ramesh.</p>
+        <p class="lead">RJP Infotek team. Use the shared password from your team admin.</p>
         <form id="login-form">
           <div class="field"><label class="lbl">Shared password</label>
             <input type="password" id="pwd" autofocus required />
@@ -635,6 +693,7 @@ function renderShell() {
       <div class="topbar-actions">
         <span class="topbar-clock" id="clock"></span>
         <button class="btn ghost" id="btn-home">Repository</button>
+        <button class="btn ghost" id="btn-admin">Admin</button>
         <button class="btn ghost" id="btn-logout">Sign out</button>
         <button class="btn primary" id="btn-new">+ New brief</button>
       </div>
@@ -650,9 +709,17 @@ function renderShell() {
 }
 function wireShell() {
   document.getElementById('btn-home').addEventListener('click', () => { state.view = 'home'; state.activeBriefId = null; stopPolling(); renderMain(); renderSidebar(); });
+  document.getElementById('btn-admin').addEventListener('click', async () => { state.view = 'admin'; state.activeBriefId = null; stopPolling(); await loadFeatureRequests(); renderMain(); renderSidebar(); });
   document.getElementById('btn-logout').addEventListener('click', logout);
   document.getElementById('btn-new').addEventListener('click', () => { state.view = 'new'; state.step = 1; state.draft = defaultDraft(); renderMain(); renderSidebar(); });
   startClock();
+}
+
+async function loadFeatureRequests() {
+  try {
+    const r = await api('GET', '/api/feature-requests');
+    state.featureRequests = r.featureRequests || [];
+  } catch (e) { toast(e.message, 'error'); }
 }
 function startClock() {
   const c = document.getElementById('clock');
@@ -701,6 +768,7 @@ function renderMain() {
   const m = document.getElementById('main');
   if (!m) return;
   if (state.view === 'new') return renderWizard(m);
+  if (state.view === 'admin') return renderAdmin(m);
   if (state.view === 'detail' && state.activeBriefId) return renderDetail(m);
   return renderHome(m);
 }
@@ -714,11 +782,105 @@ function renderHome(m) {
       </div>
       <div class="panel">
         <h3>What this portal does</h3>
-        <p style="margin:0 0 14px;color:var(--ink-2);font-size:13.5px;">Submit a brief — domain, roles, location, anything specific you want — and the sourcing pipeline runs automatically. Watch progress live, download the result as Excel, Sheet, or PDF when it's ready. Past briefs stay in the repository on the left.</p>
+        <p style="margin:0 0 14px;color:var(--ink-2);font-size:13.5px;">Submit a brief — keywords, roles, location, exclusions, anything specific you want — and the sourcing pipeline runs automatically. Watch progress live, download the result as Excel when it's ready. Past briefs stay in the repository on the left.</p>
         <button class="btn primary" id="btn-home-new">+ New sourcing brief</button>
+
+        <div class="panel-collapsible" style="margin-top:18px;">
+          <div class="panel-collapsible-head"><h4>Quick intake — type a one-liner</h4><span style="color:var(--ink-3);font-size:11px;">Claude will parse it into a brief</span></div>
+          <div class="panel-collapsible-body" style="display:block;">
+            <div class="hint">Example: "10 Aurora PostgreSQL DBA trainers in India, exclude HCL Wipro, no speakers, by Friday."</div>
+            <div class="quick-intake">
+              <input id="quick-intake" placeholder='e.g. "5 Splunk Cloud Observability trainers, India, exclude TCS, niche"' />
+              <button class="btn primary" id="btn-quick-intake">Parse</button>
+            </div>
+            <div id="quick-intake-result" style="margin-top:8px;"></div>
+          </div>
+        </div>
       </div>
     </div>`;
   document.getElementById('btn-home-new').addEventListener('click', () => { state.view = 'new'; state.step = 1; state.draft = defaultDraft(); renderMain(); });
+  document.getElementById('btn-quick-intake').addEventListener('click', async () => {
+    const text = document.getElementById('quick-intake').value.trim();
+    if (!text) return;
+    const out = document.getElementById('quick-intake-result');
+    out.innerHTML = '<div class="hint">Parsing…</div>';
+    try {
+      const r = await api('POST', '/api/briefs/parse', { text });
+      const p = r.parsed || {};
+      out.innerHTML = `
+        <div class="panel-sub" style="margin:0;">Parsed ${Object.keys(p).length} fields. Review on the wizard.</div>
+        <button class="btn primary" id="btn-use-parsed" style="margin-top:6px;">Open in wizard →</button>
+        <pre style="margin-top:8px;font-size:11px;background:var(--bg);padding:10px;border-radius:4px;max-height:200px;overflow:auto;">${esc(JSON.stringify(p, null, 2))}</pre>
+      `;
+      document.getElementById('btn-use-parsed').addEventListener('click', () => {
+        state.draft = Object.assign(defaultDraft(), {
+          domain: p.title || (Array.isArray(p.keywords) ? p.keywords[0] : '') || '',
+          keywords: Array.isArray(p.keywords) ? p.keywords.join('\n') : '',
+          must: Array.isArray(p.must) ? p.must.join('\n') : '',
+          should: Array.isArray(p.should) ? p.should.join('\n') : '',
+          mustNot: Array.isArray(p.mustNot) ? p.mustNot.join('\n') : '',
+          clientCompany: p.clientCompany || '',
+          customExclusions: Array.isArray(p.customExclusions) ? p.customExclusions.join('\n') : '',
+          searchMode: p.searchMode === 'niche' ? 'niche' : 'std',
+          deadline: p.deadline || '',
+          steering: p.notes || text,
+          quickIntake: text,
+        });
+        state.view = 'new'; state.step = 1; renderMain();
+      });
+    } catch (e) {
+      out.innerHTML = `<div class="hint" style="color:var(--bad);">${esc(e.message)}</div>`;
+    }
+  });
+}
+
+function renderAdmin(m) {
+  const frs = state.featureRequests || [];
+  const grouped = { pending: [], approved: [], 'in-progress': [], shipped: [], rejected: [] };
+  for (const f of frs) (grouped[f.status] || grouped.pending).push(f);
+  m.innerHTML = `
+    <div class="center">
+      <div class="page-head">
+        <h1>Admin — feature requests</h1>
+        <div class="sub">Form 2 submissions from the RJP team. No build kicks off until you approve.</div>
+      </div>
+      ${['pending', 'approved', 'in-progress', 'shipped', 'rejected'].map(s => `
+        <div class="panel">
+          <h3>${s.replace('-', ' ')} <span style="color:var(--ink-3);font-weight:400;font-size:13px;">· ${grouped[s].length}</span></h3>
+          ${grouped[s].length ? `<div class="frq-list">${grouped[s].map(f => `
+            <div class="frq-item" data-id="${esc(f.id)}">
+              <div>
+                <div style="font-size:13.5px;color:var(--ink);white-space:pre-wrap;">${esc(f.text)}</div>
+                <div class="frq-meta">${esc(f.submittedBy)} · ${f.createdAt ? new Date(f.createdAt).toLocaleString('en-IN') : ''}${f.contextBriefId ? ' · brief ' + esc(f.contextBriefId) : ''}</div>
+                ${f.adminNote ? `<div class="frq-meta" style="margin-top:4px;color:var(--ink-2);"><strong>Note:</strong> ${esc(f.adminNote)}</div>` : ''}
+              </div>
+              <div class="frq-actions">
+                ${s === 'pending' ? `
+                  <button class="btn primary frq-set" data-status="approved">Approve</button>
+                  <button class="btn frq-set" data-status="rejected">Reject</button>` :
+                s === 'approved' ? `
+                  <button class="btn primary frq-set" data-status="in-progress">Start build</button>
+                  <button class="btn frq-set" data-status="rejected">Reject</button>` :
+                s === 'in-progress' ? `
+                  <button class="btn primary frq-set" data-status="shipped">Mark shipped</button>` :
+                ''}
+              </div>
+            </div>
+          `).join('')}</div>` : '<div class="hint">None yet.</div>'}
+        </div>
+      `).join('')}
+    </div>
+  `;
+  m.querySelectorAll('.frq-set').forEach(b => b.addEventListener('click', async e => {
+    const id = e.target.closest('.frq-item').dataset.id;
+    const status = e.target.dataset.status;
+    try {
+      await api('PATCH', '/api/feature-requests/' + encodeURIComponent(id), { status });
+      await loadFeatureRequests();
+      renderMain();
+      toast('Updated.', 'success');
+    } catch (err) { toast(err.message, 'error'); }
+  }));
 }
 
 /* ============================================================ */
@@ -777,7 +939,7 @@ function renderStep1() {
 
       <div class="field">
         <label class="lbl">Your name</label>
-        <input id="op-name" value="${esc(d.operatorName)}" placeholder="e.g. Vijay Sharma" />
+        <input id="op-name" value="${esc(d.operatorName)}" placeholder="e.g. your name" />
         <div class="err">Please enter your name.</div>
       </div>
       <div class="field">
@@ -804,13 +966,24 @@ function renderStep1() {
   });
 }
 
-/* Step 2 — domain + roles */
+/* Step 2 — domain + roles + keywords + mode (v3.1) */
 function renderStep2() {
   const d = state.draft;
   document.getElementById('wizard-body').innerHTML = `
     <div class="panel">
-      <h3>Domain & roles</h3>
-      <div class="panel-sub">Pick the technology stack and list one or more role lines. Each role can have its own headcount.</div>
+      <h3>Domain, keywords & mode</h3>
+      <div class="panel-sub">Pick the stack, type any number of keyword variants you want searched, and choose the search mode.</div>
+
+      <div class="field">
+        <label class="lbl">Search mode</label>
+        <div class="mode-toggle" id="mode-toggle">
+          <button type="button" data-mode="std"   class="${d.searchMode === 'std' ? 'on' : ''}">Standard</button>
+          <button type="button" data-mode="niche" class="${d.searchMode === 'niche' ? 'on' : ''}">Niche</button>
+        </div>
+        <div class="hint" style="margin-top:6px;" id="mode-hint">${d.searchMode === 'niche'
+          ? 'Niche — rare tech. Pipeline runs adjacent-tech expansion via Claude, weights small-firm Founders/Principals higher, and falls back to institutes/Udemy/YouTube if profiles are thin. Target TAT ~12 min.'
+          : 'Standard — well-supplied tech (AWS, Salesforce, Java). LinkedIn-first, ~12 queries, target TAT ~8 min.'}</div>
+      </div>
 
       <div class="field">
         <label class="lbl">Primary domain</label>
@@ -823,12 +996,18 @@ function renderStep2() {
 
       <div class="field" id="custom-wrap" style="display:${(d.domain && d.domain.startsWith('Other')) ? 'flex' : 'none'};">
         <label class="lbl">Specify domain</label>
-        <input id="f-custom" value="${esc(d.customDomain)}" placeholder="e.g. SAP FICO, React Native" />
+        <input id="f-custom" value="${esc(d.customDomain)}" placeholder="e.g. SAP FICO, Aurora PostgreSQL DBA, Splunk Cloud Observability" />
       </div>
 
       <div class="field">
-        <label class="lbl">Roles required</label>
-        <div class="hint">Add one row per role. Most briefs have 1–3 rows.</div>
+        <label class="lbl">Search keywords <span style="color:var(--ink-3);font-weight:400;font-size:11.5px;">— one per line, list as many as needed</span></label>
+        <div class="hint">Each keyword runs its own L1 cascade (Claude → Google → LinkedIn enrichment). Results dedupe at the end. Example for Siebel→SF: <code>Salesforce Developer / Solution Architect</code>, <code>Salesforce Implementation Consultant</code>, <code>Salesforce Data Migration Expert</code>, <code>Salesforce Middleware Expert</code>.</div>
+        <textarea id="f-keywords" rows="5" placeholder="Salesforce Developer&#10;Salesforce Solution Architect&#10;Salesforce Implementation Consultant&#10;Salesforce Data Migration Expert">${esc(d.keywords)}</textarea>
+      </div>
+
+      <div class="field">
+        <label class="lbl">Roles required <span style="color:var(--ink-3);font-weight:400;font-size:11.5px;">— optional structured headcount per role</span></label>
+        <div class="hint">Useful when one brief has multiple buckets (Functional + Technical + Migration). If you don't need this, leave the single placeholder row as-is.</div>
         <div class="roles-grid">
           <div class="roles-head">
             <div></div>
@@ -842,7 +1021,6 @@ function renderStep2() {
         </div>
         <div style="display:flex;gap:8px;align-items:center;margin-top:6px;">
           <button class="btn" id="btn-add-role" type="button">+ Add another role</button>
-          <span class="hint" style="margin:0;">Use the Specific direction box on the next step for any role-level nuance not captured by these columns.</span>
         </div>
       </div>
 
@@ -890,28 +1068,41 @@ function renderStep2() {
     paintRoles();
   });
 
+  // mode toggle
+  document.querySelectorAll('#mode-toggle button').forEach(b => b.addEventListener('click', () => {
+    state.draft.searchMode = b.dataset.mode;
+    document.querySelectorAll('#mode-toggle button').forEach(x => x.classList.toggle('on', x.dataset.mode === state.draft.searchMode));
+    document.getElementById('mode-hint').textContent = state.draft.searchMode === 'niche'
+      ? 'Niche — rare tech. Pipeline runs adjacent-tech expansion via Claude, weights small-firm Founders/Principals higher, and falls back to institutes/Udemy/YouTube if profiles are thin. Target TAT ~12 min.'
+      : 'Standard — well-supplied tech (AWS, Salesforce, Java). LinkedIn-first, ~12 queries, target TAT ~8 min.';
+  }));
+
   document.getElementById('btn-next').addEventListener('click', () => {
     let ok = true;
     if (!state.draft.domain) { document.getElementById('f-domain').closest('.field').classList.add('has-error'); ok = false; }
     if (state.draft.domain.startsWith('Other')) {
       state.draft.customDomain = document.getElementById('f-custom').value.trim();
     }
+    state.draft.keywords = document.getElementById('f-keywords').value;
     const validRoles = state.draft.roles.filter(r => r.title.trim());
-    if (!validRoles.length) { toast('Add at least one role with a title.', 'error'); ok = false; }
+    const hasKeywords = state.draft.keywords.trim().length > 0;
+    if (!validRoles.length && !hasKeywords) { toast('Add at least one keyword (or a role with a title).', 'error'); ok = false; }
     if (!ok) return;
-    state.draft.roles = validRoles.map(r => ({ ...r, count: r.count || 1 }));
+    state.draft.roles = (validRoles.length ? validRoles : []).map(r => ({ ...r, count: r.count || 1 }));
     state.step = 3;
     renderWizard(document.getElementById('main'));
   });
 }
 
-/* Step 3 — location, exclusions, steering, output format */
+/* Step 3 — location, boolean filters, three-pronged exclusion, advanced (v3.1) */
 function renderStep3() {
   const d = state.draft;
+  const adv = d.advanced || {};
+  const sources = adv.sources || { linkedin: true, urbanpro: true, youtube: true, udemy: true, blogs: true };
   document.getElementById('wizard-body').innerHTML = `
     <div class="panel">
-      <h3>Location & specifics</h3>
-      <div class="panel-sub">Refine where the trainers should be, who to skip, anything specific you want, and how you'd like the output.</div>
+      <h3>Filters & exclusions</h3>
+      <div class="panel-sub">Boolean operators on Google queries, three-pronged exclusion, optional advanced settings for the searcher. Big Indian SIs (Tech M, Wipro, Cognizant, HCL, Infy, TCS, Accenture, Capgemini) are excluded by default — you don't have to type them.</div>
 
       <div class="field">
         <label class="lbl">Location preference</label>
@@ -923,15 +1114,41 @@ function renderStep3() {
       </div>
 
       <div class="field">
-        <label class="lbl">Trainers to exclude (optional)</label>
-        <div class="hint">Paste names of trainers you already have. One per line.</div>
-        <textarea id="f-exclusions" rows="4" placeholder="e.g.&#10;Ram Kumar&#10;Rahul Patel">${esc(d.exclusions)}</textarea>
+        <label class="lbl">Must include (AND) <span style="color:var(--ink-3);font-weight:400;font-size:11.5px;">— required terms in every query, one per line</span></label>
+        <textarea id="f-must" rows="3" placeholder="e.g.&#10;certified&#10;corporate trainer">${esc(d.must)}</textarea>
       </div>
 
       <div class="field">
-        <label class="lbl">Specific direction (optional)</label>
-        <div class="hint">Anything you want done differently from the standard template — what to prioritise, what to skip, how to organise the output. Free text.</div>
-        <textarea id="f-steering" rows="5" placeholder="Examples:&#10;• Prioritise Salesforce Industries / OmniStudio over generic admin&#10;• Sort the output by years of experience descending&#10;• Group results by city in separate sheets&#10;• Skip InfraCloud — already engaged&#10;• Include only profiles with explicit certification">${esc(d.steering)}</textarea>
+        <label class="lbl">Should include (OR) <span style="color:var(--ink-3);font-weight:400;font-size:11.5px;">— at least one of these in each query</span></label>
+        <textarea id="f-should" rows="3" placeholder="e.g.&#10;functional&#10;technical&#10;migration&#10;integration">${esc(d.should)}</textarea>
+      </div>
+
+      <div class="field">
+        <label class="lbl">Must NOT include (NOT) <span style="color:var(--ink-3);font-weight:400;font-size:11.5px;">— hard filter terms</span></label>
+        <textarea id="f-mustnot" rows="3" placeholder="e.g.&#10;intern&#10;student&#10;junior">${esc(d.mustNot)}</textarea>
+      </div>
+
+      <div class="field">
+        <label class="lbl">Client company (excluded from results)</label>
+        <div class="hint">If RJP is sourcing for ClientX, type "ClientX" — anyone working at ClientX gets filtered out.</div>
+        <input id="f-client" value="${esc(d.clientCompany)}" placeholder="e.g. ClientX Pvt Ltd" />
+      </div>
+
+      <div class="field">
+        <label class="lbl">Client's existing principal (also excluded)</label>
+        <div class="hint">If the client is currently served by HCL or another principal partner, exclude that too. Distinct from "must NOT" above.</div>
+        <input id="f-principal" value="${esc(d.clientPrincipal)}" placeholder="e.g. HCL Technologies" />
+      </div>
+
+      <div class="field">
+        <label class="lbl">Custom company exclusions <span style="color:var(--ink-3);font-weight:400;font-size:11.5px;">— one per line, on top of the default big-firm list</span></label>
+        <textarea id="f-customex" rows="3" placeholder="e.g.&#10;InfraCloud Technologies&#10;Some other firm already engaged">${esc(d.customExclusions)}</textarea>
+      </div>
+
+      <div class="field">
+        <label class="lbl">Specific direction (free text, optional)</label>
+        <div class="hint">Anything you want done differently — what to prioritise, how to organise output. Searcher reads this when reviewing.</div>
+        <textarea id="f-steering" rows="4" placeholder="Examples:&#10;• Prioritise OmniStudio over generic admin&#10;• Sort by years of experience descending&#10;• Skip InfraCloud — already engaged">${esc(d.steering)}</textarea>
       </div>
 
       <div class="field">
@@ -948,11 +1165,34 @@ function renderStep3() {
         <input id="f-deadline" type="date" value="${esc(d.deadline)}" />
       </div>
 
+      <!-- Advanced searcher panel -->
+      <div class="panel-collapsible ${d.advancedOpen ? 'open' : ''}" id="adv-panel">
+        <div class="panel-collapsible-head" id="adv-head">
+          <h4>Advanced search settings</h4>
+          <span style="color:var(--ink-3);font-size:11px;">${d.advancedOpen ? 'Hide' : 'Show'}</span>
+        </div>
+        <div class="panel-collapsible-body">
+          <div class="advanced-grid">
+            <div class="field" style="margin:0;">
+              <label class="lbl">Query depth (1–25)</label>
+              <input id="adv-depth" type="number" min="1" max="25" value="${esc(adv.queryDepth || (d.searchMode === 'niche' ? 20 : 12))}" />
+            </div>
+            <div class="field" style="margin:0;">
+              <label class="lbl">Source toggles</label>
+              <div class="source-toggles">
+                ${['linkedin', 'urbanpro', 'youtube', 'udemy', 'blogs'].map(s => `
+                  <label class="chip ${sources[s] ? 'on' : ''}"><input type="checkbox" data-src="${s}" ${sources[s] ? 'checked' : ''}> ${s}</label>
+                `).join('')}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       ${navButtons(true)}
     </div>
   `;
   wireNav();
-  // chip wiring
   document.querySelectorAll('#loc-chips .chip').forEach(c => {
     c.addEventListener('click', () => {
       document.querySelectorAll('#loc-chips .chip').forEach(x => x.classList.remove('on'));
@@ -967,76 +1207,132 @@ function renderStep3() {
       state.draft.outputFormat = e.target.value;
     });
   });
+  // Advanced panel toggle
+  document.getElementById('adv-head').addEventListener('click', () => {
+    state.draft.advancedOpen = !state.draft.advancedOpen;
+    document.getElementById('adv-panel').classList.toggle('open', state.draft.advancedOpen);
+  });
+  document.querySelectorAll('.source-toggles .chip').forEach(c => {
+    c.addEventListener('click', e => {
+      const cb = c.querySelector('input');
+      // small delay for native checkbox toggle
+      setTimeout(() => {
+        c.classList.toggle('on', cb.checked);
+        state.draft.advanced.sources = state.draft.advanced.sources || {};
+        state.draft.advanced.sources[cb.dataset.src] = cb.checked;
+      }, 0);
+    });
+  });
 
   document.getElementById('btn-next').addEventListener('click', () => {
-    state.draft.exclusions = document.getElementById('f-exclusions').value;
+    state.draft.must = document.getElementById('f-must').value;
+    state.draft.should = document.getElementById('f-should').value;
+    state.draft.mustNot = document.getElementById('f-mustnot').value;
+    state.draft.clientCompany = document.getElementById('f-client').value.trim();
+    state.draft.clientPrincipal = document.getElementById('f-principal').value.trim();
+    state.draft.customExclusions = document.getElementById('f-customex').value;
     state.draft.steering = document.getElementById('f-steering').value;
     state.draft.deadline = document.getElementById('f-deadline').value;
+    state.draft.advanced.queryDepth = parseInt(document.getElementById('adv-depth').value, 10) || 12;
     state.step = 4;
     renderWizard(document.getElementById('main'));
   });
 }
 
-/* Step 4 — review + submit */
+/* Step 4 — review + preview + submit */
 function renderStep4() {
   const d = state.draft;
   const totalCount = d.roles.reduce((a, r) => a + (r.count || 0), 0);
   const domainShown = d.domain.startsWith('Other') ? (d.customDomain || 'Other (unspecified)') : d.domain;
+  const kwLines = (d.keywords || '').split('\n').map(s => s.trim()).filter(Boolean);
+  const fieldList = (s) => s ? esc(s).replace(/\n/g, '<br/>') : '—';
 
   document.getElementById('wizard-body').innerHTML = `
     <div class="panel">
-      <h3>Review & submit</h3>
-      <div class="panel-sub">Quick check before the pipeline kicks off. Everything's editable — go back if anything needs to change.</div>
+      <h3>Review, preview, submit</h3>
+      <div class="panel-sub">Run a 60-second pre-flight to see 5 sample profiles before committing the full pipeline. Then submit.</div>
 
       <div class="review-grid">
         <div>Operator</div><div>${esc(d.operatorName)} · ${esc(d.operatorEmail)}</div>
+        <div>Mode</div><div>${d.searchMode === 'niche' ? 'Niche' : 'Standard'}</div>
         <div>Domain</div><div>${esc(domainShown)}</div>
-        <div>Total headcount</div><div>${totalCount} across ${d.roles.length} role line${d.roles.length === 1 ? '' : 's'}</div>
-        <div>Roles</div><div>${d.roles.map((r, i) => `${i + 1}. ${esc(r.title)} (×${r.count}${r.skill ? ' · ' + esc(r.skill) : ''}${r.bucket ? ' · ' + esc(r.bucket) : ''})`).join('<br/>')}</div>
+        <div>Keywords</div><div>${kwLines.length ? kwLines.map(k => esc(k)).join('<br/>') : '— (using roles only)'}</div>
+        <div>Roles</div><div>${d.roles.length ? d.roles.map((r, i) => `${i + 1}. ${esc(r.title)} (×${r.count}${r.skill ? ' · ' + esc(r.skill) : ''}${r.bucket ? ' · ' + esc(r.bucket) : ''})`).join('<br/>') : '—'}</div>
+        <div>Total headcount</div><div>${totalCount}</div>
         <div>Location</div><div>${esc(d.location)}</div>
+        <div>Must include</div><div>${fieldList(d.must)}</div>
+        <div>Should include</div><div>${fieldList(d.should)}</div>
+        <div>Must NOT include</div><div>${fieldList(d.mustNot)}</div>
+        <div>Client (excluded)</div><div>${esc(d.clientCompany) || '—'}</div>
+        <div>Client principal (excluded)</div><div>${esc(d.clientPrincipal) || '—'}</div>
+        <div>Custom exclusions</div><div>${fieldList(d.customExclusions)}</div>
+        <div>Default exclusions</div><div style="color:var(--ink-3);font-size:12px;">Tech Mahindra, Cognizant, Wipro, HCL, Infosys, TCS, Accenture, Capgemini, Mindtree, LTIMindtree, Mphasis, IBM India, Oracle India</div>
+        <div>Specific direction</div><div>${fieldList(d.steering)}</div>
         <div>Output</div><div>${esc((OUTPUT_OPTIONS.find(o => o.v === d.outputFormat) || {}).l || d.outputFormat)}</div>
         <div>Deadline</div><div>${esc(d.deadline) || '—'}</div>
-        <div>Exclusions</div><div>${d.exclusions ? esc(d.exclusions).replace(/\n/g, '<br/>') : '—'}</div>
-        <div>Specific direction</div><div>${d.steering ? esc(d.steering).replace(/\n/g, '<br/>') : '—'}</div>
       </div>
 
       <div class="panel-actions">
         <button class="btn" id="btn-back">← Back</button>
-        <button class="btn primary" id="btn-submit">Submit & start sourcing</button>
+        <button class="btn" id="btn-preview">Run pre-flight (1 query, 5 samples)</button>
+        <button class="btn primary" id="btn-submit">Submit & start full sourcing</button>
       </div>
     </div>
   `;
   wireNav();
-  document.getElementById('btn-submit').addEventListener('click', submitWizard);
+  document.getElementById('btn-submit').addEventListener('click', () => submitWizard(false));
+  document.getElementById('btn-preview').addEventListener('click', () => submitWizard(true));
 }
 
-async function submitWizard() {
+async function submitWizard(preview) {
   const d = state.draft;
-  const btn = document.getElementById('btn-submit');
-  btn.disabled = true; btn.textContent = 'Submitting…';
+  const btnSubmit = document.getElementById('btn-submit');
+  const btnPreview = document.getElementById('btn-preview');
+  if (btnSubmit) btnSubmit.disabled = true;
+  if (btnPreview) btnPreview.disabled = true;
+  if (preview && btnPreview) btnPreview.textContent = 'Running pre-flight…';
+  if (!preview && btnSubmit) btnSubmit.textContent = 'Submitting…';
   try {
+    const titleParts = [];
+    if (d.roles.length && d.roles[0].title) titleParts.push(d.roles.map(r => r.title).filter(Boolean).slice(0, 2).join(' + '));
+    titleParts.push(d.domain.startsWith('Other') ? d.customDomain : d.domain);
+    const title = titleParts.filter(Boolean).join(' — ') + (d.searchMode === 'niche' ? ' [Niche]' : '');
+
     const payload = {
-      title: d.roles.map(r => r.title).filter(Boolean).slice(0, 2).join(' + ') + ' — ' + (d.domain.startsWith('Other') ? d.customDomain : d.domain),
+      title,
       domain: d.domain.startsWith('Other') ? d.customDomain : d.domain,
       geo: d.location,
       deadline: d.deadline,
       outputFormat: d.outputFormat,
       roles: d.roles,
+      keywords: d.keywords,
+      must: d.must,
+      should: d.should,
+      mustNot: d.mustNot,
+      clientCompany: d.clientCompany,
+      clientPrincipal: d.clientPrincipal,
+      customExclusions: d.customExclusions,
+      searchMode: d.searchMode,
+      advanced: d.advanced,
       steering: d.steering,
-      exclusions: d.exclusions,
       operator: { name: d.operatorName, email: d.operatorEmail },
     };
     const r = await api('POST', '/api/briefs', payload);
+    if (preview) {
+      // Trigger preview run on the same brief
+      await api('POST', '/api/briefs/' + encodeURIComponent(r.brief.id) + '/preview');
+    }
     await loadBriefs();
     state.activeBriefId = r.brief.id;
     state.view = 'detail';
     state.step = 1; state.draft = defaultDraft();
     startPolling();
     renderMain(); renderSidebar();
-    toast('Brief submitted — pipeline running.', 'success');
+    toast(preview ? 'Pre-flight running — 5 samples coming.' : 'Brief submitted — full pipeline running.', 'success');
   } catch (e) {
     toast(e.message, 'error');
-    btn.disabled = false; btn.textContent = 'Submit & start sourcing';
+    if (btnSubmit) { btnSubmit.disabled = false; btnSubmit.textContent = 'Submit & start full sourcing'; }
+    if (btnPreview) { btnPreview.disabled = false; btnPreview.textContent = 'Run pre-flight (1 query, 5 samples)'; }
   }
 }
 
@@ -1052,35 +1348,88 @@ function renderDetail(m) {
     return;
   }
   const status = b.status || 'queued';
+  // v3.1 stage map. Engine emits: queued → discovery → scoring → packaging → complete.
+  // Plus: preview / preview_ready for pre-flight.
   const stages = [
-    { key: 'queued',    name: 'Queued',     sub: 'Brief accepted' },
-    { key: 'running',   name: 'Discovery',  sub: 'Scanning LinkedIn, UrbanPro, YouTube and more' },
-    { key: 'scoring',   name: 'Scoring',    sub: 'Applying signal & rubric scoring' },
-    { key: 'building',  name: 'Packaging',  sub: 'Building the output file' },
-    { key: 'complete',  name: 'Done',       sub: 'Output ready to download' },
+    { keys: ['queued'],                       name: 'Queued',      sub: 'Brief accepted' },
+    { keys: ['discovery', 'preview'],          name: 'Discovery',   sub: 'Claude L1 → Apify Google → LinkedIn enrichment' },
+    { keys: ['scoring'],                       name: 'Scoring',     sub: 'Speaker-aware classifier + reason-traceable accept/reject' },
+    { keys: ['packaging'],                     name: 'Packaging',   sub: 'Building Excel with Candidates + Rejected (audit) tabs' },
+    { keys: ['complete', 'preview_ready'],     name: 'Done',        sub: 'Output ready' },
   ];
-  const ix = stages.findIndex(s => s.key === status);
+  const ix = stages.findIndex(s => s.keys.includes(status));
 
   const counts = b.counts || {};
-  const meta = (key) => {
-    if (key === 'running' && counts.discovered) return counts.discovered + ' discovered';
-    if (key === 'scoring' && counts.scored) return counts.scored + ' scored';
-    if (key === 'building' && counts.rows) return counts.rows + ' rows';
-    if (key === 'complete' && b.outputFile) return 'file ready';
+  const meta = (s) => {
+    if (s.keys.includes('discovery') && counts.discovered) return counts.discovered + ' discovered';
+    if (s.keys.includes('scoring') && (counts.accepted || counts.rejected)) return (counts.accepted || 0) + ' accepted / ' + (counts.rejected || 0) + ' rejected';
+    if (s.keys.includes('packaging') && counts.accepted) return counts.accepted + ' rows';
+    if (s.keys.includes('complete') && b.outputFile) return 'file ready';
     return '';
   };
 
+  // TAT widget
+  const tatTarget = b.tatTarget || (b.mode === 'niche' ? 720 : 480);
+  const tatElapsed = b.totalElapsed
+    ? parseFloat(b.totalElapsed)
+    : (b.createdAt ? Math.round((Date.now() - new Date(b.createdAt).getTime()) / 1000) : 0);
+  const isComplete = status === 'complete' || status === 'preview_ready';
+  const isOver = !isComplete && tatElapsed > tatTarget;
+  const tatHTML = `
+    <div class="tat-bar ${isComplete ? 'done' : (isOver ? 'over' : '')}">
+      <span class="tat-dot"></span>
+      <span><strong>${isComplete ? 'TAT' : 'TAT — live'}:</strong> ${formatDuration(tatElapsed)} ${isComplete ? '' : ' / ' + formatDuration(tatTarget) + ' target'} ${b.mode === 'niche' ? '(Niche)' : '(Standard)'} </span>
+      ${(b.timings || []).length ? '<span style="margin-left:auto;color:var(--ink-3);font-size:11.5px;">Stages: ' + b.timings.map(t => esc(t.stage) + ' ' + esc(t.elapsed) + 's').join(' · ') + '</span>' : ''}
+    </div>
+  `;
+
   const downloadHTML = (status === 'complete')
     ? `<div class="download-bar">
-         <span>✓ Output ready</span>
-         <a class="btn primary" href="${API_BASE}/api/briefs/${encodeURIComponent(b.id)}/output?token=${encodeURIComponent(state.token)}" download>Download ${esc(b.outputFormat || 'xlsx').toUpperCase()}</a>
+         <span>✓ Output ready · ${counts.accepted || '?'} accepted, ${counts.rejected || '?'} rejected (audit tab)</span>
+         <a class="btn primary" href="${API_BASE}/api/briefs/${encodeURIComponent(b.id)}/output?token=${encodeURIComponent(state.token)}" download>Download Excel</a>
        </div>`
-    : (status === 'failed'
-        ? `<div class="download-bar" style="background:var(--bad-soft);color:var(--bad);border-color:var(--bad);">
-             <span>✗ Pipeline stopped: ${esc(b.error || 'unknown error')}</span>
-             <button class="btn" id="btn-retry" style="margin-left:auto;">Retry</button>
-           </div>`
-        : '');
+    : (status === 'preview_ready')
+      ? `<div class="download-bar" style="background:var(--accent-soft);color:var(--accent);border-color:var(--accent);">
+           <span>✓ Pre-flight done in ${esc(b.previewElapsed || '?')}s — review the 5 samples below, then run full pipeline if it looks right.</span>
+           <button class="btn primary" id="btn-run-full" style="margin-left:auto;">Run full pipeline</button>
+         </div>`
+    : (status === 'failed')
+      ? `<div class="download-bar" style="background:var(--bad-soft);color:var(--bad);border-color:var(--bad);">
+           <span>✗ Pipeline stopped: ${esc(b.error || 'unknown error')}</span>
+           <button class="btn" id="btn-retry" style="margin-left:auto;">Retry</button>
+         </div>`
+      : '';
+
+  // Sample tables (after preview or completion)
+  const sample = b.previewSample || b.acceptedSample || [];
+  const rejSample = b.previewRejected || b.rejectedSample || [];
+
+  const sampleTableHTML = (rows, mode) => rows.length ? `
+    <table class="sample-table">
+      <thead><tr>
+        ${mode === 'accept' ? '<th>#</th><th>Score</th>' : '<th>#</th>'}
+        <th>Title / headline</th>
+        <th>Signal</th>
+        <th>${mode === 'accept' ? 'Why accepted' : 'Why rejected'}</th>
+        <th>Source</th>
+      </tr></thead>
+      <tbody>
+        ${rows.map((c, i) => `
+          <tr>
+            ${mode === 'accept' ? `<td>${i + 1}</td><td><strong>${c.score || 0}</strong></td>` : `<td>${i + 1}</td>`}
+            <td><div style="font-weight:500;">${esc((c.title || '').slice(0, 80))}</div><div style="color:var(--ink-3);font-size:11.5px;">${esc((c.text || '').slice(0, 140))}…</div></td>
+            <td><span class="signal-pill signal-${esc(c.signal || '')}">${esc((c.signal || '').replace(/_/g, ' '))}</span></td>
+            <td style="color:var(--ink-2);font-size:12.5px;">${esc(c.decision_reason || c.reason || '')}</td>
+            <td>${c.url ? `<a href="${esc(c.url)}" target="_blank" rel="noopener">link</a>` : '—'}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>` : '<div class="hint">None.</div>';
+
+  const exclusionList = [];
+  if (b.clientCompany) exclusionList.push('client: ' + b.clientCompany);
+  if (b.clientPrincipal) exclusionList.push('principal: ' + b.clientPrincipal);
+  if (Array.isArray(b.customExclusions)) exclusionList.push(...b.customExclusions);
 
   m.innerHTML = `
     <div class="center">
@@ -1089,18 +1438,22 @@ function renderDetail(m) {
         <div class="sub">Submitted ${b.createdAt ? new Date(b.createdAt).toLocaleString('en-IN') : 'just now'} · ID <span style="font-family:monospace;">${esc(b.id)}</span></div>
       </div>
 
+      ${tatHTML}
+
       <div class="meta-grid">
+        <div class="meta-cell"><span class="meta-label">Mode</span><span class="meta-val">${b.mode === 'niche' ? 'Niche' : 'Standard'}</span></div>
         <div class="meta-cell"><span class="meta-label">Domain</span><span class="meta-val">${esc(b.domain || '—')}</span></div>
-        <div class="meta-cell"><span class="meta-label">Location</span><span class="meta-val">${esc(b.geo || '—')}</span></div>
-        <div class="meta-cell"><span class="meta-label">Output</span><span class="meta-val">${esc((b.outputFormat || 'xlsx').toUpperCase())}</span></div>
-        <div class="meta-cell"><span class="meta-label">Roles</span><span class="meta-val">${(b.roles || []).length}</span></div>
-        <div class="meta-cell"><span class="meta-label">Total headcount</span><span class="meta-val">${(b.roles || []).reduce((a, r) => a + (r.count || 0), 0)}</span></div>
+        <div class="meta-cell"><span class="meta-label">Keywords</span><span class="meta-val">${(b.keywords || []).length || (b.roles || []).length}</span></div>
+        <div class="meta-cell"><span class="meta-label">Discovered</span><span class="meta-val">${counts.discovered || 0}</span></div>
+        <div class="meta-cell"><span class="meta-label">Accepted</span><span class="meta-val" style="color:var(--good);">${counts.accepted || 0}</span></div>
+        <div class="meta-cell"><span class="meta-label">Rejected</span><span class="meta-val" style="color:var(--bad);">${counts.rejected || 0}</span></div>
         <div class="meta-cell"><span class="meta-label">Status</span><span class="meta-val"><span class="status-pill status-${status}">${status}</span></span></div>
+        <div class="meta-cell"><span class="meta-label">Exclusions</span><span class="meta-val" style="font-size:11.5px;">${exclusionList.length ? esc(exclusionList.slice(0, 3).join(', ')) + (exclusionList.length > 3 ? '…' : '') : 'default big-firm only'}</span></div>
       </div>
 
       <div class="panel">
         <h3>Pipeline progress</h3>
-        <div class="panel-sub">${status === 'complete' ? 'Done.' : (status === 'failed' ? 'Stopped on error.' : 'Live — refreshes every 2.5 seconds.')}</div>
+        <div class="panel-sub">${isComplete ? 'Done.' : (status === 'failed' ? 'Stopped on error.' : 'Live — refreshes every 2.5 seconds.')}</div>
         <div class="stages">
           ${stages.map((s, i) => {
             const cls = (status === 'failed' && i === Math.max(0, ix)) ? 'active' : (i < ix ? 'done' : (i === ix ? 'active' : ''));
@@ -1109,25 +1462,61 @@ function renderDetail(m) {
               <div class="stage-num">${i < ix ? '✓' : i + 1}</div>
               <div class="stage-info">
                 <span class="stage-name">${s.name}</span>
-                <span class="stage-sub">${s.sub}${meta(s.key) ? ' · ' + meta(s.key) : ''}</span>
+                <span class="stage-sub">${s.sub}${meta(s) ? ' · ' + meta(s) : ''}</span>
               </div>
               <div class="stage-status">${statusLabel}</div>
             </div>`;
           }).join('')}
         </div>
         <div class="log">${(b.log || []).map(l =>
-          `<div><span class="ts">${esc((l.ts || '').slice(11, 19))}</span> <span class="${l.kind === 'err' ? 'err' : ''}">${esc(l.msg || '')}</span></div>`
+          `<div><span class="ts">${esc((l.ts || '').slice(11, 19))}</span> <span class="${l.kind === 'err' ? 'err' : (l.kind === 'warn' ? 'err' : '')}">${esc(l.msg || '')}</span></div>`
         ).join('') || '<div><span class="ts">--:--:--</span> Waiting for first event…</div>'}</div>
       </div>
 
       ${downloadHTML}
 
+      ${(sample.length || rejSample.length) ? `
+        <div class="panel" style="margin-top:14px;">
+          <h3>Top accepted (sample)</h3>
+          <div class="panel-sub">First ${Math.min(sample.length, 10)} of ${counts.accepted || sample.length}. Full list in the Excel.</div>
+          ${sampleTableHTML(sample.slice(0, 10), 'accept')}
+        </div>
+
+        ${rejSample.length ? `<div class="panel" style="margin-top:14px;">
+          <h3>Rejected (audit sample)</h3>
+          <div class="panel-sub">First ${Math.min(rejSample.length, 10)} rejections with the reason — the "verifiable conclusion" audit requirement. Full audit in the Excel "Rejected" tab.</div>
+          ${sampleTableHTML(rejSample.slice(0, 10), 'reject')}
+        </div>` : ''}
+      ` : ''}
+
+      ${isComplete ? `
+        <div class="panel feedback-form" style="margin-top:14px;">
+          <h3>Feedback on this run</h3>
+          <div class="panel-sub">Form 1 — say what was off. The pipeline re-runs with your feedback applied as steering. Form 2 — feature suggestions go into a queue for Gulshan to review (no auto-build).</div>
+
+          <div class="field">
+            <label class="lbl">Form 1 — feedback for re-run</label>
+            <textarea id="f-feedback" placeholder="e.g. Too many DBA generalists. Filter for Aurora-specific. Drop AnalyticsVidhya — already engaged."></textarea>
+          </div>
+          <div class="panel-actions" style="justify-content:flex-start;margin-top:6px;">
+            <button class="btn primary" id="btn-feedback">Re-run with feedback</button>
+          </div>
+
+          <div class="field" style="margin-top:18px;">
+            <label class="lbl">Form 2 — feature request (admin queue, no auto-build)</label>
+            <textarea id="f-frq" placeholder="e.g. Add a column showing past training programs (counts) per candidate. Or — save query templates by domain."></textarea>
+          </div>
+          <div class="panel-actions" style="justify-content:flex-start;margin-top:6px;">
+            <button class="btn" id="btn-frq">Submit feature request</button>
+          </div>
+        </div>` : ''}
+
       ${b.steering ? `<div class="panel" style="margin-top:14px;">
-        <h3>Specific direction</h3>
+        <h3>Specific direction & feedback history</h3>
         <div style="font-size:13.5px;color:var(--ink-2);white-space:pre-wrap;">${esc(b.steering)}</div>
       </div>` : ''}
 
-      <div class="panel" style="margin-top:14px;">
+      ${(b.roles || []).length ? `<div class="panel" style="margin-top:14px;">
         <h3>Roles in this brief</h3>
         ${(b.roles || []).map((r, i) => `
           <div style="padding:10px 0;border-bottom:1px solid var(--line-soft);font-size:13.5px;display:grid;grid-template-columns:24px 1.4fr 1fr 1fr 60px;gap:10px;">
@@ -1138,23 +1527,65 @@ function renderDetail(m) {
             <span style="font-family:monospace;text-align:right;">×${r.count || 1}</span>
           </div>
         `).join('')}
-      </div>
+      </div>` : ''}
     </div>
   `;
-  // auto-scroll log
+
+  // wiring
   const logBox = m.querySelector('.log');
   if (logBox) logBox.scrollTop = logBox.scrollHeight;
-  // retry
+
   const rtb = document.getElementById('btn-retry');
   if (rtb) rtb.addEventListener('click', async () => {
     try {
       await api('POST', '/api/briefs/' + encodeURIComponent(b.id) + '/retry');
-      await loadBriefs();
-      startPolling();
-      renderMain(); renderSidebar();
+      await loadBriefs(); startPolling(); renderMain(); renderSidebar();
       toast('Retrying…', 'success');
     } catch (e) { toast(e.message, 'error'); }
   });
+
+  const fb = document.getElementById('btn-feedback');
+  if (fb) fb.addEventListener('click', async () => {
+    const text = document.getElementById('f-feedback').value.trim();
+    if (!text) { toast('Type the feedback first.', 'error'); return; }
+    fb.disabled = true; fb.textContent = 'Re-running…';
+    try {
+      await api('POST', '/api/briefs/' + encodeURIComponent(b.id) + '/feedback', { feedback: text });
+      await loadBriefs(); startPolling(); renderMain(); renderSidebar();
+      toast('Feedback applied — re-running.', 'success');
+    } catch (e) { toast(e.message, 'error'); fb.disabled = false; fb.textContent = 'Re-run with feedback'; }
+  });
+
+  const frb = document.getElementById('btn-frq');
+  if (frb) frb.addEventListener('click', async () => {
+    const text = document.getElementById('f-frq').value.trim();
+    if (!text) { toast('Type the feature request first.', 'error'); return; }
+    frb.disabled = true; frb.textContent = 'Submitting…';
+    try {
+      await api('POST', '/api/feature-requests', { text, contextBriefId: b.id });
+      document.getElementById('f-frq').value = '';
+      toast('Feature request queued. Gulshan will review.', 'success');
+      frb.disabled = false; frb.textContent = 'Submit feature request';
+    } catch (e) { toast(e.message, 'error'); frb.disabled = false; frb.textContent = 'Submit feature request'; }
+  });
+
+  const fullBtn = document.getElementById('btn-run-full');
+  if (fullBtn) fullBtn.addEventListener('click', async () => {
+    fullBtn.disabled = true; fullBtn.textContent = 'Starting…';
+    try {
+      await api('POST', '/api/briefs/' + encodeURIComponent(b.id) + '/retry');
+      await loadBriefs(); startPolling(); renderMain(); renderSidebar();
+      toast('Full pipeline running.', 'success');
+    } catch (e) { toast(e.message, 'error'); fullBtn.disabled = false; fullBtn.textContent = 'Run full pipeline'; }
+  });
+}
+
+function formatDuration(seconds) {
+  const s = parseInt(seconds, 10) || 0;
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return m + 'm' + (r ? ' ' + r + 's' : '');
 }
 
 /* ============================================================ */
