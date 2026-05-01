@@ -850,6 +850,90 @@ function bookScore(signal) {
   })[signal] || 0;
 }
 
+/* ---------- Web verification (v3.2) ---------- */
+// For each top accepted candidate, fire ONE focused Apify Google query of the
+// form `"<Name>" <skill> (workshop OR training OR course OR bootcamp) India`.
+// 2+ hits → +5 score boost (actively teaches). 0 hits → -3 demote (unverifiable).
+// 1 hit → no change. Adds verifyNote to the candidate so RJP sees the reasoning
+// in the Excel + UI.
+//
+// Cost: ~20 queries × $0.0035 = $0.07/brief. Latency: ~30s with concurrency=3.
+// Disable with DISABLE_WEB_VERIFY=1. Skip in MOCK_APIFY mode.
+const WEB_VERIFY_TOP_N        = parseInt(process.env.WEB_VERIFY_TOP_N || '20', 10);
+const WEB_VERIFY_CONCURRENCY  = parseInt(process.env.WEB_VERIFY_CONCURRENCY || '3', 10);
+const WEB_VERIFY_BOOST        = parseInt(process.env.WEB_VERIFY_BOOST || '5', 10);
+const WEB_VERIFY_DEMOTE       = parseInt(process.env.WEB_VERIFY_DEMOTE || '3', 10);
+
+function extractCandidateName(title) {
+  if (!title) return '';
+  // Title typically formed as "<Name> — <bio>" by upstream code, or
+  // "<Name> at <Co>" / "<Name> - <bio>" from Google. Take first segment.
+  const head = title.split(/[—–]|\s-\s|\bat\s/i)[0].trim();
+  // Strip parens (often years/credentials), drop trailing punctuation
+  return head.replace(/\s*\(.*?\)\s*/g, ' ').replace(/[.,;:|]+$/, '').trim().slice(0, 80);
+}
+
+async function webVerifyCandidates(client, accepted, bp, briefId) {
+  const useVerify = process.env.MOCK_APIFY !== '1'
+    && process.env.DISABLE_WEB_VERIFY !== '1'
+    && accepted.length > 0;
+  if (!useVerify) return accepted;
+
+  const top = accepted.slice(0, WEB_VERIFY_TOP_N);
+  const targets = top.map((c, idx) => {
+    const name = extractCandidateName(c.title);
+    if (!name || name.length < 4) return null; // skip if no usable name
+    const kw = (c.keyword || bp.keywords[0] || '').slice(0, 50);
+    const query = `"${name}" ${kw} (workshop OR training OR course OR bootcamp OR cohort) India`;
+    return { idx, c, name, query };
+  }).filter(Boolean);
+
+  if (targets.length === 0) return accepted;
+  if (briefId) logAndSave(briefId, `[verify] web-verifying ${targets.length}/${top.length} top accepted (concurrency ${WEB_VERIFY_CONCURRENCY})`);
+
+  // Concurrent worker pool
+  const verdicts = new Array(targets.length);
+  let nextIdx = 0;
+  const worker = async () => {
+    while (true) {
+      const i = nextIdx++;
+      if (i >= targets.length) return;
+      const t = targets[i];
+      try {
+        const items = await runGoogleQuery(
+          client,
+          { query: t.query, keyword: t.c.keyword, source: 'web-verify', tier: 'verify' },
+          null  // suppress per-query log noise from the verify tier
+        );
+        verdicts[i] = items.length;
+      } catch (_) {
+        verdicts[i] = -1; // error → treat as no verification
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: WEB_VERIFY_CONCURRENCY }, worker));
+
+  // Apply adjustments
+  const idxToVerdict = new Map();
+  for (let i = 0; i < targets.length; i++) idxToVerdict.set(targets[i].idx, verdicts[i]);
+
+  let boosted = 0, demoted = 0;
+  const adjusted = accepted.map((c, idx) => {
+    const v = idxToVerdict.get(idx);
+    if (v == null) return c; // not in top N
+    let delta = 0;
+    let note = '';
+    if (v >= 2) { delta = WEB_VERIFY_BOOST; note = `Web-verified: ${v} hit(s) for name + training keywords`; boosted++; }
+    else if (v === 0) { delta = -WEB_VERIFY_DEMOTE; note = 'No web verification — name + training keywords returned 0 results'; demoted++; }
+    else if (v === 1) { note = '1 weak verification hit'; }
+    else { note = 'Verification query errored — score unchanged'; }
+    return { ...c, score: Math.max(0, c.score + delta), webVerified: v, verifyNote: note };
+  });
+
+  if (briefId) logAndSave(briefId, `[verify] +${boosted} boosted, -${demoted} demoted, ${targets.length - boosted - demoted} unchanged`);
+  return adjusted.sort((a, b) => b.score - a.score);
+}
+
 function compositeScore(p, weights) {
   if (REJECTED_SIGNALS.has(p.signal)) return 0;
   const w = weights || { signal: 40, bucket: 30, verify: 15, book: 15 };
@@ -900,6 +984,7 @@ async function buildXlsx(brief, accepted, rejected, bp, timings) {
     { header: 'Source snippet', key: 'snip', width: 60 },
     { header: 'Bucket fit', key: 'bf', width: 9 },
     { header: 'Verify', key: 'v', width: 7 },
+    { header: 'Web verify', key: 'wv', width: 32 },
     { header: 'Book', key: 'b', width: 6 },
     { header: 'Tier', key: 'tier', width: 8 },
     { header: 'Keyword', key: 'kw', width: 22 },
@@ -919,6 +1004,7 @@ async function buildXlsx(brief, accepted, rejected, bp, timings) {
       snip: c.decision_snippet || '',
       bf: c.bucketFit,
       v: c.verify,
+      wv: c.verifyNote || (c.webVerified == null ? '(not verified)' : ''),
       b: c.book,
       tier: c.tier,
       kw: c.keyword,
@@ -1152,10 +1238,15 @@ async function runPipeline(briefId, opts = {}) {
       return { ...candidate, ...decision };
     });
 
-    const accepted = scored.filter(c => c.decision === 'accept').sort((a, b) => b.score - a.score);
+    const acceptedRaw = scored.filter(c => c.decision === 'accept').sort((a, b) => b.score - a.score);
     const rejected = scored.filter(c => c.decision === 'reject');
 
-    // Apply quality cap
+    // ---- Web verification of top accepted candidates ----
+    const stopVerify = stageStart('Web verification');
+    const accepted = await webVerifyCandidates(apifyClient, acceptedRaw, bp, briefId);
+    stopVerify();
+
+    // Apply quality cap (after re-sort from web verify)
     const capped = accepted.slice(0, bp.advanced.qualityCap);
     stopScore();
 
