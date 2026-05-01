@@ -1396,13 +1396,25 @@ function splitNameRoleCompany(c) {
   name = name.replace(/\s*[|\-·]\s*LinkedIn\s*$/i, '').trim();
   rest = rest.replace(/\s*[|\-·]\s*LinkedIn\s*$/i, '').trim();
 
-  // Company: prefer harvestapi experience[0], else extract "at <Co>" / "@ <Co>"
-  // from headline or rest. Skip "at LinkedIn" noise.
+  // Company: prefer harvestapi experience[0], else extract from headline/title.
+  // Order of fallbacks:
+  //   1. "<role> at <Co>" / "<role> @ <Co>"  — most common LinkedIn shape
+  //   2. "Founder/Principal/Owner/Director/CEO ... of <Co>" — when no experience
+  //      entry exists (typical for self-employed founders)
+  //   3. "Founder, <Co>" / "Owner, <Co>"  — comma form
   let company = exp.company || exp.companyName || '';
   if (!company) {
     const blob = (rest + ' ' + headline);
     const at = blob.match(/\b(?:at|@)\s+([A-Z][\w&.,'\- ]{2,50})/);
     if (at && !/linkedin/i.test(at[1])) company = at[1].trim();
+    if (!company) {
+      const founderOf = blob.match(/\b(?:founder|co-founder|principal|owner|director|ceo|cto|cfo|managing\s+partner|managing\s+director|chief\s+\w+)[\w&,'.\- ]{0,30}\s+of\s+([A-Z][\w&.,'\- ]{2,50})/i);
+      if (founderOf) company = founderOf[1].trim();
+    }
+    if (!company) {
+      const founderComma = blob.match(/\b(?:founder|co-founder|owner|principal|managing\s+partner)\s*,\s*([A-Z][\w&.,'\- ]{2,50})/i);
+      if (founderComma) company = founderComma[1].trim();
+    }
   }
   // Tidy trailing punctuation/possessive
   company = company.replace(/[.,;:|]+$/, '').trim();
@@ -1452,10 +1464,22 @@ function extractWebsite(c) {
   if (h.contactInfo && Array.isArray(h.contactInfo.websites) && h.contactInfo.websites[0]) {
     return String(h.contactInfo.websites[0]).slice(0, 120);
   }
-  // Last resort: first non-LinkedIn URL in the bio/snippet
+  // Last resort: first non-LinkedIn, non-asset URL in the bio/snippet.
+  // Skip image/font extensions and known asset CDN hosts (urbanpro page icons,
+  // LinkedIn media, Google fonts, CloudFront, googleusercontent, akamai). The
+  // v3.4 first run surfaced `https://c.urbanpro.com/.../urbanpro_icon-...png`
+  // as a "website" — that's a page-decoration favicon, not the trainer's site.
   const txt = (c.text || '') + ' ' + (h.about || '');
-  const m = txt.match(/https?:\/\/(?!(?:www\.|[a-z]{2}\.)?linkedin\.com)[\w.-]+\.[a-z]{2,}[^\s<>"')]*/i);
-  return m ? m[0].slice(0, 120) : '';
+  const urlRe = /https?:\/\/(?!(?:www\.|[a-z]{2}\.)?linkedin\.com)[\w.-]+\.[a-z]{2,}[^\s<>"')]*/gi;
+  const skipExt = /\.(?:png|jpe?g|gif|svg|ico|webp|bmp|css|js|woff2?|ttf|eot)(?:\?|#|$)/i;
+  const skipHost = /^https?:\/\/(?:c\.urbanpro\.com|fonts\.(?:gstatic|googleapis)\.com|media-[\w-]+\.licdn\.com|[\w-]+\.cloudfront\.net|[\w-]+\.googleusercontent\.com|[\w-]+\.akamaized\.net)/i;
+  const urls = txt.match(urlRe) || [];
+  for (const u of urls) {
+    if (skipExt.test(u)) continue;
+    if (skipHost.test(u)) continue;
+    return u.slice(0, 120);
+  }
+  return '';
 }
 
 function buildRemarks(c) {
