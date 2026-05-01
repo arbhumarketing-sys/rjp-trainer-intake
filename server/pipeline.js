@@ -238,34 +238,61 @@ function mockGoogle(q) {
 }
 
 /* ---------- Apify: harvestapi LinkedIn enrichment ---------- */
+// Canonicalise LinkedIn URLs to https://www.linkedin.com/in/<slug> so country-
+// subdomain variants (in.linkedin.com, jo.linkedin.com, etc.) match what the
+// harvestapi response uses as `url`. Without this the harvestMap lookup fails
+// even when enrichment succeeded.
+function canonLinkedinUrl(u) {
+  if (!u) return '';
+  let s = String(u).toLowerCase().split('?')[0].split('#')[0].replace(/\/$/, '');
+  s = s.replace(/^https?:\/\/(?:www\.|[a-z]{2}\.)?linkedin\.com\//, 'https://www.linkedin.com/');
+  return s;
+}
+
 async function enrichLinkedIn(client, urls) {
   if (process.env.MOCK_APIFY === '1' || !urls.length) {
     // Mock: derive location from URL hint. Real harvestapi returns the LinkedIn truth.
     return urls.map(u => {
       let location = 'Bengaluru, India';
-      if (u.includes('hari-babu')) location = 'Plano, Texas, United States';
-      else if (u.includes('rajesh-iyer-us') || u.includes('-us')) location = 'Indianapolis, Indiana, United States';
+      let countryCode = 'IN';
+      if (u.includes('hari-babu')) { location = 'Plano, Texas, United States'; countryCode = 'US'; }
+      else if (u.includes('rajesh-iyer-us') || u.includes('-us')) { location = 'Indianapolis, Indiana, United States'; countryCode = 'US'; }
       else if (u.includes('chennai')) location = 'Chennai, India';
       else if (u.includes('mumbai')) location = 'Mumbai, India';
       else if (u.includes('hyderabad')) location = 'Hyderabad, India';
-      return { url: u, location, headline: '', about: '', experience: [] };
+      return { url: canonLinkedinUrl(u), location, countryCode, headline: '', about: '', experience: [] };
     });
   }
   try {
+    // 2026-05-01: harvestapi schema changed (modifiedAt 2026-04-30):
+    //   - `profileUrls` → `urls`
+    //   - `profileScraperMode` is now required (specific allowed values, listed below)
+    //   - response `location` is now an object `{linkedinText, countryCode, parsed:{...}}`
+    //     instead of a plain string.
     const input = {
-      profileUrls: urls,
-      maxItems: urls.length,
+      urls,
+      profileScraperMode: 'Profile details no email ($4 per 1k)',
     };
     const run = await client.actor(APIFY_LINKEDIN_ACTOR).call(input, { waitSecs: 240 });
     if (!run || !run.defaultDatasetId) return [];
     const ds = await client.dataset(run.defaultDatasetId).listItems();
-    return (ds.items || []).map(it => ({
-      url: it.url || it.profileUrl || it.linkedinUrl || '',
-      location: it.location || it.locationName || '',
-      headline: it.headline || it.title || '',
-      about: it.about || it.summary || '',
-      experience: it.experience || it.experiences || [],
-    }));
+    return (ds.items || []).map(it => {
+      const locRaw = it.location;
+      const locStr = typeof locRaw === 'string'
+        ? locRaw
+        : (locRaw && (locRaw.linkedinText || (locRaw.parsed && locRaw.parsed.text))) || it.locationName || '';
+      const cc = (locRaw && typeof locRaw === 'object' && locRaw.countryCode)
+        || (locRaw && locRaw.parsed && locRaw.parsed.countryCode)
+        || '';
+      return {
+        url: canonLinkedinUrl(it.url || it.profileUrl || it.linkedinUrl || ''),
+        location: locStr,
+        countryCode: cc,
+        headline: it.headline || it.title || '',
+        about: it.about || it.summary || '',
+        experience: it.experience || it.experiences || [],
+      };
+    });
   } catch (e) {
     console.warn('[linkedin enrichment failed]', e.message);
     return [];
@@ -487,13 +514,19 @@ function classifySignal(it, bp, harvest) {
 
 function checkGeoIndia(blob, harvest) {
   // Prefer harvestapi location field — that's the LinkedIn truth.
-  if (harvest && harvest.location) {
-    const loc = harvest.location.toLowerCase();
-    if (/\b(india|bharat)\b/.test(loc)) return { india: true, detected: harvest.location };
-    for (const c of INDIAN_CITIES) if (loc.includes(c)) return { india: true, detected: harvest.location };
-    // Strong negatives
-    if (/\b(united states|usa|uk|united kingdom|canada|australia|germany|singapore|dubai|uae|texas|california|new york|london)\b/.test(loc)) {
-      return { india: false, detected: harvest.location };
+  if (harvest) {
+    // ISO country code is the strongest signal when available
+    if (harvest.countryCode === 'IN') return { india: true, detected: harvest.location || 'India (countryCode=IN)' };
+    if (harvest.countryCode && harvest.countryCode !== 'IN') {
+      return { india: false, detected: `${harvest.location || ''} [${harvest.countryCode}]` };
+    }
+    if (typeof harvest.location === 'string' && harvest.location) {
+      const loc = harvest.location.toLowerCase();
+      if (/\b(india|bharat)\b/.test(loc)) return { india: true, detected: harvest.location };
+      for (const c of INDIAN_CITIES) if (loc.includes(c)) return { india: true, detected: harvest.location };
+      if (/\b(united states|usa|uk|united kingdom|canada|australia|germany|singapore|dubai|uae|texas|california|new york|london)\b/.test(loc)) {
+        return { india: false, detected: harvest.location };
+      }
     }
   }
   // Fall back to text — only a strong city/India keyword passes.
@@ -816,7 +849,9 @@ async function runPipeline(briefId, opts = {}) {
     let harvestMap = {};
     if (linkedInUrls.length && bp.advanced.sources.linkedin && !previewMode) {
       const harvested = await enrichLinkedIn(apifyClient, linkedInUrls);
-      harvestMap = Object.fromEntries(harvested.map(h => [h.url.toLowerCase(), h]));
+      // Index by canonical URL — harvestapi normalises in.linkedin.com → www.linkedin.com,
+      // so the input URL and the response URL won't byte-match without canonLinkedinUrl.
+      harvestMap = Object.fromEntries(harvested.map(h => [canonLinkedinUrl(h.url), h]));
       logAndSave(briefId, `[harvestapi] enriched ${harvested.length} LinkedIn profiles`);
     }
     stopEnrich();
@@ -825,7 +860,7 @@ async function runPipeline(briefId, opts = {}) {
     store.update(briefId, { status: 'scoring' });
     const stopScore = stageStart('Scoring + classification');
     const scored = normalised.map(it => {
-      const harvest = harvestMap[(it.url || '').toLowerCase()] || null;
+      const harvest = harvestMap[canonLinkedinUrl(it.url)] || null;
       const cls = classifySignal(it, bp, harvest);
       const bf = bucketFit(it, bp.keywords);
       const v = verifyScore(it, harvest);
