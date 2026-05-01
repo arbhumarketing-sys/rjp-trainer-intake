@@ -147,8 +147,15 @@ function normalizeBrief(brief) {
     weights: { signal: 40, bucket: 30, verify: 15, book: 15 },
     qualityCap: QUALITY_CAP_DEFAULT,
   }, brief.advanced || {});
+  // Pull persistent exclusions from store. Used so RJP doesn't have to retype
+  // "InfraCloud", "AnalyticsVidhya" etc. on every brief once they've added
+  // them to the always-exclude list. See store.getPersistentExclusions.
+  const persistentExclusions = (typeof store.getPersistentExclusions === 'function'
+    ? store.getPersistentExclusions().map(e => e.term)
+    : []);
   const exclusions = dedupeLower([
     ...DEFAULT_BIGFIRM_EXCLUSIONS,
+    ...persistentExclusions,
     ...(clientCompany ? [clientCompany] : []),
     ...(clientPrincipal ? [clientPrincipal] : []),
     ...customExclusions,
@@ -157,7 +164,40 @@ function normalizeBrief(brief) {
   // so multi-revision feedback histories don't blow the LLM prompt budget. Latest
   // feedback is always at the end (runWithFeedback appends), so tail-slice.
   const steering = (brief.steering || '').slice(-2500);
-  return { keywords, must, should, mustNot, clientCompany, clientPrincipal, customExclusions, searchMode, advanced, exclusions, steering };
+  // v3.2: pass the brief's domain through so claudeKnowledgeCall etc. can
+  // append domain-specific tuning to the system prompt.
+  const domain = (brief.domain || '').trim();
+  return { keywords, must, should, mustNot, clientCompany, clientPrincipal, customExclusions, searchMode, advanced, exclusions, steering, domain };
+}
+
+/* ---------- Domain-specific prompt tuning (v3.2) ---------- */
+// Different domains have predictable Indian trainer-pool patterns. A generic
+// "list trainers for X" prompt misses those patterns. Adding a 1-2 sentence
+// domain hint to the L1.1/L2/L3 system prompts steers Claude toward the
+// canonical trainer pool for the technology, lifting recall significantly.
+const DOMAIN_TUNING = {
+  'salesforce':       'Look for OmniStudio, Service/Sales/Marketing Cloud, MuleSoft specialists. Common India pool: independent consultants who left Cognizant/Wipro Salesforce practices.',
+  'aws':              'Look for AWS-certified architects (especially Solutions Architect Pro). Common pool: ex-AWS sales engineers turned freelance consultants, re:Invent attendees.',
+  'azure':            'Look for Azure Solutions Architect Expert / DevOps Engineer Expert holders. Common pool: ex-Microsoft FTEs and Microsoft Most Valuable Professionals (MVPs) in India.',
+  'gcp':              'Look for Google Cloud Professional Architect / Data Engineer holders. Smaller pool than AWS — prefer Google Cloud Champion Innovators.',
+  'kubernetes':       'Look for CKA/CKAD/CKS-certified engineers. Pool: CNCF Ambassadors who actually run cohort programs (NOT just KubeCon speakers — that was the v3.1 SOP correction).',
+  'sap':              'Look for module specialists (FICO, MM, SD, HCM, S/4HANA). Common pool: ex-SAP labs Bengaluru employees who went freelance.',
+  'data science':     'Look for ML/data engineers, Kaggle masters who teach. Pool: AnalyticsVidhya / InsofE / GreatLearning alumni who went independent.',
+  'data':             'Cover both data engineering and ML — pool overlaps with practitioner-trainers from product analytics teams.',
+  'cybersecurity':    'Look for OSCP/CISSP/OSCE-certified pentesters/architects. Pool: ex-Big-4 (Deloitte/EY/PwC/KPMG) security consultants and OWASP chapter leads.',
+  'java':             'Pool is large; prioritise Spring/microservices/JVM-tuning specialists. Senior architects with 10+ yrs preferred.',
+  'python':           'Look for Python web (Django/FastAPI/Flask) or scientific-computing teachers. Differentiate from data-science overlap.',
+  'devops':           'Look for engineers with multi-tool depth (Terraform + K8s + CI/CD). Pool: ex-startup SREs and DevOps Bengaluru meetup organisers.',
+  'backstage':        'Very thin pool in India. Consider InfraCloud + ex-Spotify-style platform-engineering practitioners. May need adjacent-tech (developer portals, internal developer platforms) expansion.',
+};
+
+function domainHint(domain) {
+  if (!domain) return '';
+  const d = String(domain).toLowerCase();
+  for (const [key, hint] of Object.entries(DOMAIN_TUNING)) {
+    if (d.includes(key)) return `\n\nDOMAIN PATTERN (${key}): ${hint}`;
+  }
+  return '';
 }
 
 // Convert steering text into a prompt-safe directive block. Returns '' when empty.
@@ -424,7 +464,7 @@ async function claudeKnowledgeCall(briefId, kw, bp) {
   const client = getAnthropic();
   if (!client) return [];
   try {
-    const sys = `You are a sourcing assistant for a B2B trainer placement firm in India. Given a technology/skill, return named freelance corporate trainers, independent instructors, consultants, SMEs, or architects in India who deliver training. Do NOT return conference speakers without training-delivery evidence. Do NOT return employees of: ${bp.exclusions.slice(0, 8).join(', ')}.${steeringHint(bp.steering)}`;
+    const sys = `You are a sourcing assistant for a B2B trainer placement firm in India. Given a technology/skill, return named freelance corporate trainers, independent instructors, consultants, SMEs, or architects in India who deliver training. Do NOT return conference speakers without training-delivery evidence. Do NOT return employees of: ${bp.exclusions.slice(0, 8).join(', ')}.${domainHint(bp.domain)}${steeringHint(bp.steering)}`;
     const user = `Technology / skill: ${kw}\nLocation: India only.\nMode: ${bp.searchMode === 'niche' ? 'niche (rare tech, prefer founders/principals of small firms)' : 'standard'}\nReturn 5-10 named candidates with: name, LinkedIn URL (best guess if known), 1-line evidence of training-delivery (course, workshop, repeated training engagements). Format as JSON array: [{"name":"","linkedin":"","evidence":""}].`;
     const resp = await withRetry(
       () => client.messages.create({
@@ -460,7 +500,7 @@ async function claudeAdjacentTech(briefId, kw, bp) {
   const client = getAnthropic();
   if (!client) return [];
   try {
-    const sys = `You suggest adjacent technologies whose practitioners often deliver training in a target technology. Concise, specific, India-trainer-pool-aware.${steeringHint(bp && bp.steering)}`;
+    const sys = `You suggest adjacent technologies whose practitioners often deliver training in a target technology. Concise, specific, India-trainer-pool-aware.${domainHint(bp && bp.domain)}${steeringHint(bp && bp.steering)}`;
     const user = `Target technology: ${kw}\nReturn 3 adjacent/related technologies whose Indian trainers could plausibly deliver this. JSON: ["adj1","adj2","adj3"].`;
     const resp = await withRetry(
       () => client.messages.create({
@@ -491,7 +531,7 @@ async function claudeInstitutes(briefId, kw, bp) {
   const client = getAnthropic();
   if (!client) return [];
   try {
-    const sys = `You list Indian training institutes that deliver corporate training in specific technologies. Concise, verifiable.${steeringHint(bp && bp.steering)}`;
+    const sys = `You list Indian training institutes that deliver corporate training in specific technologies. Concise, verifiable.${domainHint(bp && bp.domain)}${steeringHint(bp && bp.steering)}`;
     const user = `Technology: ${kw}\nList up to 6 Indian institutes that deliver corporate training in this. JSON: [{"name":"","website":"","city":""}].`;
     const resp = await withRetry(
       () => client.messages.create({
@@ -995,6 +1035,71 @@ async function webVerifyCandidates(client, accepted, bp, briefId) {
   return adjusted.sort((a, b) => b.score - a.score);
 }
 
+/* ---------- Pre-flight quality check (v3.2) ---------- */
+// Before marking a brief complete, sample 3 candidates (rank 1, middle, last)
+// and ask Haiku "would RJP defensibly send these to a client?" If <2/3 pass,
+// log a warning that gets attached to the brief — RJP sees this on the detail
+// view as part of the lowYield reasoning. This is a cheap final guard against
+// runs where the engine accepted candidates but their fit-quality is borderline.
+//
+// Cost: 1 Haiku call, ~1K tokens = ~$0.001 per brief. Latency: ~6-9s.
+async function preflightQualityCheck(capped, brief, bp, briefId) {
+  const useCheck = hasLlmClient()
+    && process.env.DISABLE_PREFLIGHT_CHECK !== '1'
+    && capped.length >= 3;
+  if (!useCheck) return null;
+
+  const client = getAnthropic();
+  if (!client) return null;
+
+  // Sample top, middle, bottom for representative coverage
+  const idxs = [0, Math.floor(capped.length / 2), capped.length - 1];
+  const samples = idxs.map(i => capped[i]);
+
+  try {
+    const sys = `You are a senior client-relations consultant at a B2B trainer placement firm in India. For each candidate, judge: would you defensibly send this candidate to the client based on the brief? Reply ONLY a JSON array of "yes"/"no" verdicts in input order. No prose.`;
+
+    const user = `Brief: ${brief.title || '(untitled)'}
+Domain: ${brief.domain || '?'}
+Keywords: ${bp.keywords.join(', ')}
+Mode: ${bp.searchMode}
+Operator direction: ${(bp.steering || '').slice(0, 400) || '(none)'}
+
+Candidates (rank 1, mid, last):
+${samples.map((c, i) => `${i + 1}. ${(c.title || '').slice(0, 150)}
+   Signal: ${c.signal} | Score: ${c.score}
+   Why: ${(c.reason || '').slice(0, 120)}
+   Web verify: ${(c.verifyNote || '(none)').slice(0, 100)}`).join('\n\n')}
+
+Reply: ["yes"|"no", "yes"|"no", "yes"|"no"]`;
+
+    const resp = await withRetry(
+      () => client.messages.create({
+        model: CLAUDE_FAST,
+        max_tokens: 80,
+        system: sys,
+        messages: [{ role: 'user', content: user }],
+      }),
+      { maxAttempts: 2, baseDelayMs: 3000 }
+    );
+
+    const text = ((resp.content[0] && resp.content[0].text) || '').toLowerCase();
+    const arr = parseJsonArray(text);
+    let yesCount = 0;
+    for (const v of arr) {
+      if (typeof v === 'string' && v.includes('yes')) yesCount++;
+    }
+    const passed = yesCount >= Math.ceil(samples.length * 2 / 3);
+    if (briefId) {
+      logAndSave(briefId, `[preflight] sampled rank 1/mid/last: ${yesCount}/${samples.length} pass defensibility check ${passed ? '✓' : '⚠'}`, passed ? 'info' : 'warn');
+    }
+    return { passed, yesCount, sampled: samples.length };
+  } catch (e) {
+    if (briefId) logAndSave(briefId, `[preflight] check errored (${(e.message || '').slice(0, 80)}) — skipped`, 'warn');
+    return null;
+  }
+}
+
 /* ---------- Multi-pass Sonnet rerank (v3.2) ---------- */
 // After scoring + web-verify produces a sorted list, send the top 30 to
 // Sonnet 4.5 with full bios + the brief context for one final holistic
@@ -1426,6 +1531,11 @@ async function runPipeline(briefId, opts = {}) {
 
     logAndSave(briefId, `Scored ${scored.length}: ${accepted.length} accepted (capped to ${capped.length}), ${rejected.length} rejected`);
 
+    // ---- Pre-flight quality check ----
+    const stopPreflight = stageStart('Pre-flight quality check');
+    const preflightResult = await preflightQualityCheck(capped, brief, bp, briefId);
+    stopPreflight();
+
     // ---- Preview return without xlsx ----
     if (previewMode) {
       const sample = capped.slice(0, PREVIEW_SAMPLE_SIZE);
@@ -1453,7 +1563,9 @@ async function runPipeline(briefId, opts = {}) {
     // deceptively "successful". Threshold = 3 because below that, the brief is
     // almost certainly missing the right keywords or has too-strict exclusions.
     const lowYieldThreshold = parseInt(process.env.LOW_YIELD_THRESHOLD || '3', 10);
-    const lowYield = capped.length < lowYieldThreshold;
+    const countLow = capped.length < lowYieldThreshold;
+    const preflightFailed = preflightResult && preflightResult.passed === false;
+    const lowYield = countLow || preflightFailed;
     let lowYieldReason = null;
     if (capped.length === 0) {
       if (normalised.length === 0) {
@@ -1461,8 +1573,10 @@ async function runPipeline(briefId, opts = {}) {
       } else {
         lowYieldReason = `Discovered ${normalised.length} candidates but ALL were filtered out. Most common cause: too-strict must-NOT terms, or the geo gate rejecting non-LinkedIn-enriched profiles. Review the Rejected (audit) tab.`;
       }
-    } else if (capped.length < lowYieldThreshold) {
+    } else if (countLow) {
       lowYieldReason = `Only ${capped.length} candidates surfaced (target ≥${lowYieldThreshold}). Consider broadening keywords, relaxing must-NOT, or switching to Niche mode if the tech is rare.`;
+    } else if (preflightFailed) {
+      lowYieldReason = `Pre-flight defensibility check: only ${preflightResult.yesCount}/${preflightResult.sampled} sampled candidates passed the "would you send this to the client" gate. Consider re-running with sharper keywords or stricter must-include terms.`;
     }
     if (lowYield) logAndSave(briefId, `Low-yield run: ${lowYieldReason}`, 'warn');
 
@@ -1477,6 +1591,7 @@ async function runPipeline(briefId, opts = {}) {
       rejectedSample: rejected.slice(0, 10),
       lowYield,
       lowYieldReason,
+      preflight: preflightResult,
     });
     logAndSave(briefId, `Pipeline complete — ${capped.length} candidates, ${(stat.size / 1024).toFixed(1)} KB, ${totalElapsed}s total${lowYield ? ' [LOW YIELD]' : ''}`);
   } catch (e) {
