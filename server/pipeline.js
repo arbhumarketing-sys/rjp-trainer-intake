@@ -867,8 +867,14 @@ async function runPipeline(briefId, opts = {}) {
     logAndSave(briefId, `${normalised.length} unique items across all tiers`);
 
     // ---- LinkedIn enrichment via harvestapi ----
+    // Cap at 60: harvestapi charges ~$4/1k profiles ($0.24 per brief at the cap),
+    // and master-test 2026-05-01 showed that a 30-URL cap left half of LinkedIn
+    // hits unenriched, which collapsed to weak text-only geo classification and
+    // false-rejected Indian-named trainers as NON_INDIA. Keep the cap so a runaway
+    // brief can't enrich 1000 profiles in one shot.
+    const ENRICH_CAP = parseInt(process.env.LINKEDIN_ENRICH_CAP || '60', 10);
     const stopEnrich = stageStart('LinkedIn enrichment');
-    const linkedInUrls = normalised.map(n => n.url).filter(u => u && u.includes('linkedin.com/in/')).slice(0, 30);
+    const linkedInUrls = normalised.map(n => n.url).filter(u => u && u.includes('linkedin.com/in/')).slice(0, ENRICH_CAP);
     let harvestMap = {};
     if (linkedInUrls.length && bp.advanced.sources.linkedin && !previewMode) {
       const harvested = await enrichLinkedIn(apifyClient, linkedInUrls);
