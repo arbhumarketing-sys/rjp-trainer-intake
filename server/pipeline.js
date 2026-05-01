@@ -189,46 +189,81 @@ function dedupeLower(arr) {
 }
 
 /* ---------- Query construction (no exact-phrase wrapping — the Siebel bug) ---------- */
+// v3.2 reorder: instead of "all LinkedIn variants per keyword, then others",
+// interleave one query per source type per keyword first, then fill the
+// remaining query budget with extra LinkedIn variants. Reason: with
+// multi-keyword briefs the old order would consume the entire query cap on
+// LinkedIn alone, and YouTube/Udemy/marketplace/blog queries (especially the
+// new L4 tier) would never fire. Interleaved order ensures every source
+// gets at least one shot per keyword before LinkedIn fills the slack.
 function buildGoogleQueries(brief, bp) {
-  // Per the manual SOP: "LinkedIn + independent instructor + <tech>"
-  // Plus boolean ops from must/should/mustNot.
-  const queries = [];
   const sites = bp.advanced.sources;
   const trainerVariants = ['independent instructor', 'freelance trainer', 'corporate trainer', 'instructor', 'trainer'];
 
+  // Build per-keyword: one query per source-type, plus the LinkedIn variant array
+  const primaryByKw = [];     // 1 LinkedIn (primary variant) + 1 marketplace + 1 blog + 1 youtube + 1 udemy
+  const extraLinkedinByKw = []; // remaining LinkedIn variants
+
   for (const kw of bp.keywords) {
     const kwClean = sanitizeQueryTerm(kw);
-    for (const variant of trainerVariants) {
-      // Base: LinkedIn + variant + keyword + India
-      // Boolean: must (AND), should (OR), mustNot (-)
-      const must = bp.must.map(m => sanitizeQueryTerm(m)).filter(Boolean).map(m => `"${m}"`).join(' ');
-      const should = bp.should.map(s => sanitizeQueryTerm(s)).filter(Boolean).map(s => `"${s}"`).join(' OR ');
-      const mustNot = bp.mustNot.map(m => sanitizeQueryTerm(m)).filter(Boolean).map(m => `-"${m}"`).join(' ');
-      const exclusions = bp.exclusions.slice(0, 5).map(e => `-"${e}"`).join(' ');
+    const must     = bp.must.map(m => sanitizeQueryTerm(m)).filter(Boolean).map(m => `"${m}"`).join(' ');
+    const should   = bp.should.map(s => sanitizeQueryTerm(s)).filter(Boolean).map(s => `"${s}"`).join(' OR ');
+    const mustNot  = bp.mustNot.map(m => sanitizeQueryTerm(m)).filter(Boolean).map(m => `-"${m}"`).join(' ');
+    const exclusions = bp.exclusions.slice(0, 5).map(e => `-"${e}"`).join(' ');
 
-      if (sites.linkedin) {
-        queries.push({
+    const perKw = [];
+    if (sites.linkedin) {
+      // Primary: most generic high-recall variant first
+      perKw.push({
+        query: `${trainerVariants[0]} ${kwClean} India site:linkedin.com/in ${must} ${should ? '(' + should + ')' : ''} ${mustNot} ${exclusions}`.replace(/\s+/g, ' ').trim(),
+        keyword: kw, variant: trainerVariants[0], source: 'linkedin', tier: 'L1.3',
+      });
+    }
+    if (sites.urbanpro) {
+      perKw.push({
+        query: `${kwClean} trainer India site:urbanpro.com OR site:sulekha.com`,
+        keyword: kw, variant: 'marketplace', source: 'urbanpro', tier: 'L1.3',
+      });
+    }
+    if (sites.blogs) {
+      perKw.push({
+        query: `${kwClean} freelance trainer India -site:linkedin.com`,
+        keyword: kw, variant: 'blog', source: 'blogs', tier: 'L1.3',
+      });
+    }
+    if (sites.youtube) {
+      // L4 tier: tutorials/channels (finds creators who teach but don't self-label as "trainer")
+      perKw.push({
+        query: `${kwClean} tutorial India site:youtube.com`,
+        keyword: kw, variant: 'youtube-channel', source: 'youtube', tier: 'L4',
+      });
+    }
+    if (sites.udemy) {
+      // L4 tier: Udemy instructor pages carry course-count + student-count signals
+      perKw.push({
+        query: `${kwClean} course India site:udemy.com`,
+        keyword: kw, variant: 'udemy-instructor', source: 'udemy', tier: 'L4',
+      });
+    }
+    primaryByKw.push(perKw);
+
+    // Extra LinkedIn variants (fill remaining budget)
+    if (sites.linkedin) {
+      for (let v = 1; v < trainerVariants.length; v++) {
+        const variant = trainerVariants[v];
+        extraLinkedinByKw.push({
           query: `${variant} ${kwClean} India site:linkedin.com/in ${must} ${should ? '(' + should + ')' : ''} ${mustNot} ${exclusions}`.replace(/\s+/g, ' ').trim(),
           keyword: kw, variant, source: 'linkedin', tier: 'L1.3',
         });
       }
     }
-    // UrbanPro / Sulekha
-    if (sites.urbanpro) {
-      queries.push({
-        query: `${kwClean} trainer India site:urbanpro.com OR site:sulekha.com`,
-        keyword: kw, variant: 'marketplace', source: 'urbanpro', tier: 'L1.3',
-      });
-    }
-    // Blog/website
-    if (sites.blogs) {
-      queries.push({
-        query: `${kwClean} freelance trainer India -site:linkedin.com`,
-        keyword: kw, variant: 'blog', source: 'blogs', tier: 'L1.3',
-      });
-    }
   }
-  return queries.slice(0, bp.advanced.queryDepth);
+
+  // Flatten primary first (per-keyword grouped), then fill with extra LinkedIn variants
+  const ordered = [];
+  for (const perKw of primaryByKw) ordered.push(...perKw);
+  ordered.push(...extraLinkedinByKw);
+  return ordered.slice(0, bp.advanced.queryDepth);
 }
 
 function sanitizeQueryTerm(s) {
