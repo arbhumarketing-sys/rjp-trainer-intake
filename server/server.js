@@ -262,6 +262,43 @@ app.patch('/api/feature-requests/:id', auth.requireAuth, (req, res) => {
   res.json({ featureRequest: updated });
 });
 
+/* ---------- Persistent exclusions (v3.2) ----------
+   GET  /api/persistent-exclusions
+   POST /api/persistent-exclusions    { term, note?, sourceBriefId? }
+   DELETE /api/persistent-exclusions/:id
+
+   These are always-exclude terms applied to every brief on top of the
+   default big-firm list. Listed in admin tab; pipeline merges them into
+   bp.exclusions during normalizeBrief. */
+app.get('/api/persistent-exclusions', auth.requireAuth, (req, res) => {
+  res.json({ persistentExclusions: store.getPersistentExclusions() });
+});
+
+app.post('/api/persistent-exclusions', auth.requireAuth, (req, res) => {
+  const body = req.body || {};
+  const term = String(body.term || '').trim();
+  if (!term || term.length > 80) return res.status(400).json({ error: 'term required (1-80 chars)' });
+  // Reject dupes (case-insensitive) so the list doesn't bloat
+  const existing = store.getPersistentExclusions().find(p => (p.term || '').toLowerCase() === term.toLowerCase());
+  if (existing) return res.status(409).json({ error: 'term already in persistent-exclusion list', existing });
+  const p = {
+    id: 'pex_' + crypto.randomBytes(4).toString('hex') + '_' + Date.now().toString(36),
+    term,
+    note: String(body.note || '').slice(0, 400),
+    sourceBriefId: String(body.sourceBriefId || '').slice(0, 80),
+    addedBy: String(body.addedBy || (req.user && req.user.team) || 'rjp-infotek').slice(0, 100),
+    addedAt: new Date().toISOString(),
+  };
+  store.addPersistentExclusion(p);
+  res.json({ persistentExclusion: p });
+});
+
+app.delete('/api/persistent-exclusions/:id', auth.requireAuth, (req, res) => {
+  const ok = store.removePersistentExclusion(req.params.id);
+  if (!ok) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
+});
+
 /* Static frontend */
 const FRONTEND_DIR = path.resolve(__dirname, '..', 'frontend');
 if (fs.existsSync(path.join(FRONTEND_DIR, 'index.html'))) {

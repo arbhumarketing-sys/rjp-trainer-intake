@@ -611,6 +611,7 @@ let state = {
   token: 'open',  // auth removed 2026-05-01; sentinel keeps Authorization header machinery happy
   briefs: [],
   featureRequests: [],
+  persistentExclusions: [],  // v3.2 — always-exclude list applied to every brief
   view: 'home',         // home | new | detail | admin
   step: 1,              // 1..4 inside new-brief flow
   activeBriefId: null,
@@ -826,7 +827,7 @@ function renderShell() {
 }
 function wireShell() {
   document.getElementById('btn-home').addEventListener('click', () => { state.view = 'home'; state.activeBriefId = null; stopPolling(); renderMain(); renderSidebar(); });
-  document.getElementById('btn-admin').addEventListener('click', async () => { state.view = 'admin'; state.activeBriefId = null; stopPolling(); await loadFeatureRequests(); renderMain(); renderSidebar(); });
+  document.getElementById('btn-admin').addEventListener('click', async () => { state.view = 'admin'; state.activeBriefId = null; stopPolling(); await Promise.all([loadFeatureRequests(), loadPersistentExclusions()]); renderMain(); renderSidebar(); });
   document.getElementById('btn-new').addEventListener('click', () => { state.view = 'new'; state.step = 1; state.draft = defaultDraft(); renderMain(); renderSidebar(); });
   document.getElementById('btn-warm').addEventListener('click', async () => {
     const btn = document.getElementById('btn-warm');
@@ -847,6 +848,13 @@ async function loadFeatureRequests() {
   try {
     const r = await api('GET', '/api/feature-requests');
     state.featureRequests = r.featureRequests || [];
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function loadPersistentExclusions() {
+  try {
+    const r = await api('GET', '/api/persistent-exclusions');
+    state.persistentExclusions = r.persistentExclusions || [];
   } catch (e) { toast(e.message, 'error'); }
 }
 function startClock() {
@@ -964,14 +972,42 @@ function renderHome(m) {
 
 function renderAdmin(m) {
   const frs = state.featureRequests || [];
+  const pex = state.persistentExclusions || [];
   const grouped = { pending: [], approved: [], 'in-progress': [], shipped: [], rejected: [] };
   for (const f of frs) (grouped[f.status] || grouped.pending).push(f);
   m.innerHTML = `
     <div class="center">
       <div class="page-head">
-        <h1>Admin — feature requests</h1>
-        <div class="sub">Form 2 submissions from the RJP team. No build kicks off until you approve.</div>
+        <h1>Admin</h1>
+        <div class="sub">Persistent exclusions (always-skip companies) and Form 2 feature requests.</div>
       </div>
+
+      <div class="panel">
+        <h3>Persistent exclusions <span style="color:var(--ink-3);font-weight:400;font-size:13px;">· ${pex.length}</span></h3>
+        <div class="panel-sub">Companies/firms here are auto-added to the exclusions list of <strong>every</strong> new brief, on top of the default big-firm list. Use this for clients you've engaged elsewhere ("InfraCloud — already engaged"), known-bad sources, or principals you can't poach from.</div>
+        <div class="quick-intake" style="margin-bottom:10px;">
+          <input id="pex-term" placeholder="e.g. InfraCloud Technologies" maxlength="80" />
+          <input id="pex-note" placeholder="Note (optional, e.g. 'already engaged on Backstage brief')" maxlength="400" style="flex:2;" />
+          <button class="btn primary" id="btn-pex-add">+ Add</button>
+        </div>
+        ${pex.length ? `<div class="frq-list">${pex.map(p => `
+          <div class="frq-item" data-pex-id="${esc(p.id)}">
+            <div>
+              <div style="font-size:13.5px;color:var(--ink);"><strong>${esc(p.term)}</strong>${p.note ? ` <span style="color:var(--ink-3);font-weight:400;">— ${esc(p.note)}</span>` : ''}</div>
+              <div class="frq-meta">${esc(p.addedBy || '?')} · ${p.addedAt ? new Date(p.addedAt).toLocaleString('en-IN') : ''}${p.sourceBriefId ? ` · from brief ${esc(p.sourceBriefId)}` : ''}</div>
+            </div>
+            <div class="frq-actions">
+              <button class="btn pex-del" title="Remove from persistent exclusions">Remove</button>
+            </div>
+          </div>
+        `).join('')}</div>` : '<div class="hint">No persistent exclusions yet. Add one above to start.</div>'}
+      </div>
+
+      <div class="page-head" style="margin-top:24px;margin-bottom:14px;">
+        <h2 style="font-size:18px;font-weight:600;margin:0;">Feature requests</h2>
+        <div class="sub" style="margin-top:2px;">Form 2 submissions. No build kicks off until you approve.</div>
+      </div>
+
       ${['pending', 'approved', 'in-progress', 'shipped', 'rejected'].map(s => `
         <div class="panel">
           <h3>${s.replace('-', ' ')} <span style="color:var(--ink-3);font-weight:400;font-size:13px;">· ${grouped[s].length}</span></h3>
@@ -1007,6 +1043,34 @@ function renderAdmin(m) {
       await loadFeatureRequests();
       renderMain();
       toast('Updated.', 'success');
+    } catch (err) { toast(err.message, 'error'); }
+  }));
+
+  // Persistent exclusion add
+  const pexAddBtn = document.getElementById('btn-pex-add');
+  if (pexAddBtn) pexAddBtn.addEventListener('click', async () => {
+    const term = document.getElementById('pex-term').value.trim();
+    const note = document.getElementById('pex-note').value.trim();
+    if (!term) { toast('Type a company/term first.', 'error'); return; }
+    pexAddBtn.disabled = true;
+    try {
+      await api('POST', '/api/persistent-exclusions', { term, note });
+      await loadPersistentExclusions();
+      renderMain();
+      toast(`Added "${term}" to persistent exclusions.`, 'success');
+    } catch (err) { toast(err.message, 'error'); }
+    finally { pexAddBtn.disabled = false; }
+  });
+
+  // Persistent exclusion remove
+  m.querySelectorAll('.pex-del').forEach(b => b.addEventListener('click', async e => {
+    const id = e.target.closest('[data-pex-id]').dataset.pexId;
+    if (!confirm('Remove this persistent exclusion? It will stop being applied to new briefs.')) return;
+    try {
+      await api('DELETE', '/api/persistent-exclusions/' + encodeURIComponent(id));
+      await loadPersistentExclusions();
+      renderMain();
+      toast('Removed.', 'success');
     } catch (err) { toast(err.message, 'error'); }
   }));
 }

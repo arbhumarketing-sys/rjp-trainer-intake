@@ -25,6 +25,7 @@ const SEED_FILE = path.join(__dirname, 'seed-briefs.json');
 // In-memory caches — single source of truth for reads.
 const briefs = new Map();             // id -> brief object
 const featureRequests = new Map();    // id -> fr object
+const persistentExclusions = new Map(); // id -> { id, term, note, addedBy, sourceBriefId, addedAt }
 
 // Track briefs whose last persist failed. Reconciliation tick retries these.
 // Required by the "back-end must never silently fail" guarantee — if Postgres
@@ -66,13 +67,21 @@ async function initPostgres() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS feature_requests_created_at_idx ON feature_requests(created_at DESC);
+    CREATE TABLE IF NOT EXISTS persistent_exclusions (
+      id TEXT PRIMARY KEY,
+      data JSONB NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS persistent_exclusions_created_at_idx ON persistent_exclusions(created_at DESC);
   `);
   // Hydrate caches.
   const r1 = await pool.query('SELECT id, data FROM briefs');
   for (const row of r1.rows) briefs.set(row.id, row.data);
   const r2 = await pool.query('SELECT id, data FROM feature_requests');
   for (const row of r2.rows) featureRequests.set(row.id, row.data);
-  console.log(`[store] Postgres ready — hydrated ${briefs.size} briefs, ${featureRequests.size} feature requests.`);
+  const r3 = await pool.query('SELECT id, data FROM persistent_exclusions');
+  for (const row of r3.rows) persistentExclusions.set(row.id, row.data);
+  console.log(`[store] Postgres ready — hydrated ${briefs.size} briefs, ${featureRequests.size} feature requests, ${persistentExclusions.size} persistent exclusions.`);
   return true;
 }
 
@@ -176,6 +185,43 @@ function appendLog(id, msg, kind = 'info', meta = null) {
   _persistBrief(b);
 }
 
+/* ---------- Persistent exclusions (v3.2) ---------- */
+// Always-exclude terms that survive across all briefs. RJP adds InfraCloud,
+// AnalyticsVidhya, etc. once instead of typing them into customExclusions
+// on every brief. Pipeline reads via getPersistentExclusions() in
+// normalizeBrief and merges into bp.exclusions.
+function _persistPersistentExclusion(p) {
+  if (!pool) return;
+  pool.query(
+    `INSERT INTO persistent_exclusions (id, data, created_at)
+     VALUES ($1, $2::jsonb, COALESCE(($2::jsonb->>'addedAt')::timestamptz, NOW()))
+     ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`,
+    [p.id, JSON.stringify(p)]
+  ).catch(e => console.warn('[store] persistPersistentExclusion failed:', e.message));
+}
+
+function _deletePersistentExclusion(id) {
+  if (!pool) return;
+  pool.query('DELETE FROM persistent_exclusions WHERE id = $1', [id])
+    .catch(e => console.warn('[store] deletePersistentExclusion failed:', e.message));
+}
+
+function addPersistentExclusion(p) {
+  persistentExclusions.set(p.id, p);
+  _persistPersistentExclusion(p);
+  return p;
+}
+
+function getPersistentExclusions() {
+  return Array.from(persistentExclusions.values()).sort((a, b) => (a.term || '').localeCompare(b.term || ''));
+}
+
+function removePersistentExclusion(id) {
+  const had = persistentExclusions.delete(id);
+  if (had) _deletePersistentExclusion(id);
+  return had;
+}
+
 /* ---------- Feature requests ---------- */
 function saveFeatureRequest(fr) {
   featureRequests.set(fr.id, fr);
@@ -228,6 +274,8 @@ module.exports = {
   save, get, list, update, appendLog,
   // feature requests
   saveFeatureRequest, listFeatureRequests, getFeatureRequest, updateFeatureRequest,
+  // persistent exclusions (v3.2)
+  addPersistentExclusion, getPersistentExclusions, removePersistentExclusion,
   // seed
   loadSeedIfFresh,
 };
