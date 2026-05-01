@@ -960,6 +960,103 @@ async function webVerifyCandidates(client, accepted, bp, briefId) {
   return adjusted.sort((a, b) => b.score - a.score);
 }
 
+/* ---------- Multi-pass Sonnet rerank (v3.2) ---------- */
+// After scoring + web-verify produces a sorted list, send the top 30 to
+// Sonnet 4.5 with full bios + the brief context for one final holistic
+// re-ranking. Sonnet sees things the per-candidate scorer can't:
+//   - "this Founder has actually written a popular Aurora book → bookable"
+//   - "this PRACTITIONER's 'about' mentions 8 yrs leading internal training"
+//   - "this TRAINER_EXPLICIT is for an unrelated tech, demote"
+//   - applying steering ("prioritise OmniStudio") across the ranked set
+// Cost: 1 Sonnet call, ~30K input + ~3K output tokens = ~$0.10/brief.
+// Latency: ~10-15s. Disable with DISABLE_RERANK=1.
+const RERANK_TOP_N = parseInt(process.env.RERANK_TOP_N || '30', 10);
+
+async function multiPassRerank(accepted, brief, bp, briefId) {
+  const useRerank = hasLlmClient()
+    && process.env.DISABLE_RERANK !== '1'
+    && accepted.length >= 5;
+  if (!useRerank) return accepted;
+
+  const client = getAnthropic();
+  if (!client) return accepted;
+
+  const top = accepted.slice(0, RERANK_TOP_N);
+  const outputN = bp.advanced.qualityCap || QUALITY_CAP_DEFAULT;
+  if (briefId) logAndSave(briefId, `[rerank] Sonnet holistic rerank: top ${top.length} → top ${outputN}`);
+
+  try {
+    const sys = `You are an experienced sourcer at a B2B trainer placement firm in India. You re-rank candidates for a client brief based on holistic fit — cross-checking the classifier signal, the bio text, the source tier, and the web-verification result. You catch what the per-candidate scorer misses (e.g. a PRACTITIONER whose bio actually mentions 8 yrs of internal training, or a TRAINER_EXPLICIT whose tech is adjacent-but-not-target).
+
+Brief context:
+  Title:           ${brief.title || '(untitled)'}
+  Keywords:        ${bp.keywords.join(', ')}
+  Mode:            ${bp.searchMode}
+  Must include:    ${(bp.must || []).join(', ') || '(none)'}
+  Should include:  ${(bp.should || []).join(', ') || '(none)'}
+  Must NOT:        ${(bp.mustNot || []).join(', ') || '(none)'}
+  Excluded firms:  ${bp.exclusions.slice(0, 10).join(', ')}
+  Operator steering: ${((bp.steering || '').slice(0, 800)) || '(none)'}
+
+Output: JSON array of EXACTLY the top ${outputN} candidates (or fewer if input is smaller), best first.
+Format: [{"i": <input index>, "why": "<≤18 word holistic judgment>"}, ...]`;
+
+    const candidatesText = top.map((c, i) => {
+      return `Candidate ${i}:
+  Title:        ${(c.title || '').slice(0, 200)}
+  Signal:       ${c.signal} (raw score: ${c.score})
+  Reason:       ${(c.reason || '').slice(0, 150)}
+  Web verify:   ${c.verifyNote || '(not verified)'}
+  Sources:      ${(c.sources || []).join(', ') || c.tier || '?'}
+  Keyword:      ${c.keyword || '?'}
+  Snippet:      ${(c.text || '').slice(0, 300)}`;
+    }).join('\n\n');
+
+    const user = `Re-rank these ${top.length} candidates and return the top ${outputN}:\n\n${candidatesText}\n\nReturn JSON array now.`;
+
+    const resp = await withRetry(
+      () => client.messages.create({
+        model: CLAUDE_SMART,
+        max_tokens: Math.min(4000, Math.max(800, outputN * 90)),
+        system: sys,
+        messages: [{ role: 'user', content: user }],
+      }),
+      {
+        maxAttempts: 2,
+        baseDelayMs: 5000,
+        onRetry: (attempt, delay, err) => {
+          if (briefId) logAndSave(briefId, `[rerank retry] attempt ${attempt} (status ${err.status || '?'}); retrying in ${Math.round(delay / 1000)}s`, 'warn');
+        },
+      }
+    );
+
+    const text = (resp.content[0] && resp.content[0].text) || '';
+    const ranked = parseJsonArray(text);
+
+    const newTop = [];
+    const usedIdx = new Set();
+    for (const r of ranked) {
+      if (!r || typeof r !== 'object') continue;
+      if (!Number.isInteger(r.i) || r.i < 0 || r.i >= top.length || usedIdx.has(r.i)) continue;
+      usedIdx.add(r.i);
+      const c = top[r.i];
+      newTop.push({ ...c, rerankReason: (r.why || '').slice(0, 200), rerankPosition: newTop.length + 1 });
+      if (newTop.length >= outputN) break;
+    }
+
+    if (newTop.length === 0) {
+      if (briefId) logAndSave(briefId, `[rerank] Sonnet returned no usable rankings — keeping score-based order`, 'warn');
+      return accepted;
+    }
+
+    if (briefId) logAndSave(briefId, `[rerank] Sonnet returned ${newTop.length} ranked candidates (replaced score-based order for the top)`);
+    return newTop;
+  } catch (e) {
+    if (briefId) logAndSave(briefId, `[rerank] failed (${(e.message || '').slice(0, 100)}) — keeping score-based order`, 'warn');
+    return accepted;
+  }
+}
+
 function compositeScore(p, weights) {
   if (REJECTED_SIGNALS.has(p.signal)) return 0;
   const w = weights || { signal: 40, bucket: 30, verify: 15, book: 15 };
@@ -1027,13 +1124,16 @@ async function buildXlsx(brief, accepted, rejected, bp, timings) {
   ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E40AF' } };
 
   accepted.forEach((c, i) => {
+    // Compose "why" with: classifier reason | rerank reasoning (if Sonnet ranked it)
+    const whyParts = [c.decision_reason];
+    if (c.rerankReason) whyParts.push(`Sonnet: ${c.rerankReason}`);
     ws.addRow({
       rank: i + 1,
       score: c.score,
       title: c.title || '(no title)',
       url: c.url || '',
       signal: c.signal,
-      why: c.decision_reason,
+      why: whyParts.join(' || '),
       src: c.decision_url || c.url || '',
       snip: c.decision_snippet || '',
       bf: c.bucketFit,
@@ -1277,10 +1377,15 @@ async function runPipeline(briefId, opts = {}) {
 
     // ---- Web verification of top accepted candidates ----
     const stopVerify = stageStart('Web verification');
-    const accepted = await webVerifyCandidates(apifyClient, acceptedRaw, bp, briefId);
+    const verified = await webVerifyCandidates(apifyClient, acceptedRaw, bp, briefId);
     stopVerify();
 
-    // Apply quality cap (after re-sort from web verify)
+    // ---- Multi-pass Sonnet rerank ----
+    const stopRerank = stageStart('Sonnet rerank');
+    const accepted = await multiPassRerank(verified, brief, bp, briefId);
+    stopRerank();
+
+    // Apply quality cap (rerank already trims; this is a defensive backstop)
     const capped = accepted.slice(0, bp.advanced.qualityCap);
     stopScore();
 
