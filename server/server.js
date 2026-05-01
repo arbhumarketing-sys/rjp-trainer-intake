@@ -42,13 +42,14 @@ function makeLlmClient() {
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
+const ALLOW_ANY_ORIGIN = ALLOWED_ORIGINS.includes('*') || ALLOWED_ORIGINS.length === 0;
 
 const app = express();
 app.use(express.json({ limit: '512kb' }));
 app.use(cors({
   origin: (origin, cb) => {
     if (!origin) return cb(null, true);
-    if (!ALLOWED_ORIGINS.length) return cb(null, true);
+    if (ALLOW_ANY_ORIGIN) return cb(null, true);
     if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
     return cb(new Error('Origin not allowed: ' + origin));
   },
