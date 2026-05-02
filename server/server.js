@@ -24,7 +24,7 @@ const crypto = require('crypto');
 
 const auth = require('./auth');
 const store = require('./store');
-const { runPipeline, runWithFeedback, startWatchdog, reapOrphansOnBoot, OUTPUT_DIR, DEFAULT_BIGFIRM_EXCLUSIONS } = require('./pipeline');
+const { runPipeline, runWithFeedback, startWatchdog, reapOrphansOnBoot, OUTPUT_DIR, DEFAULT_BIGFIRM_EXCLUSIONS, clarifyInput } = require('./pipeline');
 
 let Anthropic = null;
 try { Anthropic = require('@anthropic-ai/sdk').default || require('@anthropic-ai/sdk'); } catch (_) {}
@@ -70,7 +70,7 @@ app.get('/healthz', (req, res) => {
   res.json({
     ok: true,
     ts: new Date().toISOString(),
-    version: '3.5',
+    version: '3.6',
     uptimeSec: Math.round((Date.now() - _bootedAt) / 1000),
     storage: process.env.DATABASE_URL ? 'postgres' : 'filesystem',
     dirty,
@@ -128,6 +128,9 @@ function buildBriefFromRequest(body, user, idOverride) {
     advanced: typeof body.advanced === 'object' ? body.advanced : {},
     operator: typeof body.operator === 'object' ? body.operator : null,
     steering: String(body.steering || '').slice(0, 4000),
+    // v3.6: operator already engaged with the clarify-endpoint diagnostic
+    // panel and chose to proceed. Pipeline skips its own keyword auto-cleaner.
+    confirmedClean: !!body.confirmedClean,
     status: 'queued',
     log: [],
     counts: {},
@@ -203,6 +206,33 @@ app.post('/api/briefs/:id/feedback', auth.requireAuth, (req, res) => {
   if (!text) return res.status(400).json({ error: 'feedback text required' });
   setImmediate(() => runWithFeedback(req.params.id, text));
   res.json({ ok: true, message: 'Feedback applied — re-running' });
+});
+
+/* v3.6: clarify-input endpoint. Wizard step 4 calls this on entry to get a
+   pre-submit verdict (clear / needs_clarification / unsalvageable). Stateless
+   — does NOT create a brief or run the pipeline. Cost: 1 Haiku call (~$0.001)
+   only when input looks messy; clean briefs return immediately. */
+app.post('/api/briefs/clarify', auth.requireAuth, async (req, res) => {
+  const body = req.body || {};
+  const briefDraft = {
+    title:    String(body.title    || '').slice(0, 200),
+    domain:   String(body.domain   || '').slice(0, 100),
+    keywords: arrify(body.keywords).slice(0, 20),
+    roles:    Array.isArray(body.roles) ? body.roles : [],
+    must:     arrify(body.must).slice(0, 10),
+    should:   arrify(body.should).slice(0, 10),
+    mustNot:  arrify(body.mustNot).slice(0, 10),
+    geo:      String(body.geo      || '').slice(0, 100),
+  };
+  try {
+    const result = await clarifyInput(briefDraft, null);
+    res.json(result);
+  } catch (e) {
+    console.error('[clarify] error:', e);
+    // Don't block submission on clarify failures — fall through to "clear" so
+    // the operator can still submit; the pipeline cleaner is the safety net.
+    res.json({ status: 'clear', _clarifyError: e.message });
+  }
 });
 
 /* Free-text intake parser — Claude turns one-liner into structured brief */
@@ -373,7 +403,7 @@ app.use((err, req, res, next) => {
   reapOrphansOnBoot();
 
   app.listen(PORT, () => {
-    console.log(`RJP Sourcing Portal v3.5 listening on :${PORT}`);
+    console.log(`RJP Sourcing Portal v3.6 listening on :${PORT}`);
     console.log(`  Apify Google actor:   ${process.env.APIFY_GOOGLE_ACTOR || process.env.APIFY_ACTOR || 'apify~rag-web-browser'}`);
     console.log(`  Apify LinkedIn actor: ${process.env.APIFY_LINKEDIN_ACTOR || 'harvestapi/linkedin-profile-scraper'}`);
     console.log(`  LLM client:           ${process.env.ANTHROPIC_VIA_CLAUDE_CLI === 'true' ? 'claude CLI subprocess (Max plan)' : (process.env.ANTHROPIC_API_KEY ? 'API key' : 'DISABLED')}`);

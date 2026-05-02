@@ -578,6 +578,58 @@
     font-size: 12.5px;
     display: flex; align-items: center; gap: 8px;
   }
+
+  /* v3.6 — Clarification panel on wizard step 4 (review) */
+  .clarify-panel {
+    display: flex; align-items: flex-start; gap: 12px;
+    padding: 14px 16px; margin: 0 0 18px 0;
+    border: 1px solid; border-radius: var(--radius);
+  }
+  .clarify-panel .clarify-icon { font-size: 18px; flex-shrink: 0; line-height: 1.4; }
+  .clarify-panel .clarify-body { flex: 1; min-width: 0; }
+  .clarify-panel h4 { margin: 0 0 6px; font-size: 14px; font-weight: 600; color: var(--ink); }
+  .clarify-panel p, .clarify-panel ul { margin: 0 0 8px; font-size: 13px; line-height: 1.55; color: var(--ink-2); }
+  .clarify-panel ul { padding-left: 18px; }
+  .clarify-panel li { margin-bottom: 4px; }
+  .clarify-panel code { background: rgba(0,0,0,0.06); padding: 1px 6px; border-radius: 3px; font-size: 12px; font-family: 'Menlo', 'Consolas', monospace; }
+  .clarify-panel.loading {
+    background: var(--line-soft); border-color: var(--line); color: var(--ink-3);
+    font-size: 13px;
+  }
+  .clarify-panel.ok {
+    background: var(--good-soft); border-color: var(--good);
+  }
+  .clarify-panel.ok .clarify-icon { color: var(--good); }
+  .clarify-panel.suggest {
+    background: var(--warn-soft); border-color: var(--warn);
+  }
+  .clarify-panel.suggest .clarify-icon { color: var(--warn); }
+  .clarify-panel.blocked {
+    background: var(--bad-soft); border-color: var(--bad);
+  }
+  .clarify-panel.blocked .clarify-icon { color: var(--bad); }
+  .clarify-panel textarea {
+    width: 100%; min-height: 84px;
+    padding: 8px 10px;
+    border: 1px solid var(--line); border-radius: var(--radius-sm);
+    background: var(--panel);
+    font-size: 13px; font-family: 'Menlo', 'Consolas', monospace;
+    line-height: 1.5;
+    resize: vertical;
+  }
+  .clarify-panel textarea:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px var(--accent-soft); }
+  .clarify-panel .clarify-label {
+    display: block; margin: 10px 0 4px;
+    font-weight: 500; font-size: 12px; color: var(--ink-2);
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .clarify-panel .clarify-questions {
+    margin: 8px 0 4px; padding: 10px 12px;
+    background: rgba(255,255,255,0.5);
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+  }
+  .clarify-panel .clarify-questions strong { display: block; margin-bottom: 6px; color: var(--ink); }
 </style>
 </head>
 <body>
@@ -625,6 +677,10 @@ let state = {
   backendDirty: null,        // { briefs, featureRequests } from /healthz
   backendCheckedAt: null,    // ms timestamp
   healthTimer: null,
+  // v3.6 conversational pre-submit clarification (wizard step 4)
+  clarifyLoading: false,
+  clarifyResult: null,       // null | { status, issues, draft, questions, ... }
+  clarifyReqId: 0,           // bumped per request, used to drop stale responses
 };
 function defaultDraft() {
   return {
@@ -1123,7 +1179,17 @@ function navButtons(canNext, nextLabel) {
 }
 function wireNav() {
   const back = document.getElementById('btn-back');
-  if (back) back.addEventListener('click', () => { state.step--; renderWizard(document.getElementById('main')); });
+  if (back) back.addEventListener('click', () => {
+    // v3.6: when leaving review step (4), clear any stale clarification
+    // verdict so re-entry triggers a fresh /api/briefs/clarify call against
+    // the (possibly edited) draft.
+    if (state.step === 4) {
+      state.clarifyResult = null;
+      state.clarifyLoading = false;
+    }
+    state.step--;
+    renderWizard(document.getElementById('main'));
+  });
 }
 
 /* Step 1 — operator */
@@ -1457,10 +1523,19 @@ function renderStep4() {
   const kwLines = (d.keywords || '').split('\n').map(s => s.trim()).filter(Boolean);
   const fieldList = (s) => s ? esc(s).replace(/\n/g, '<br/>') : '—';
 
+  // v3.6: clarification panel content. The verdict is computed by the
+  // /api/briefs/clarify backend endpoint (1 Haiku call only when input
+  // looks messy). Three verdicts: clear / needs_clarification /
+  // unsalvageable. Buttons swap based on the verdict (see actionsHtml).
+  const clarifyHtml = renderClarifyPanel();
+  const actionsHtml = renderClarifyActions();
+
   document.getElementById('wizard-body').innerHTML = `
     <div class="panel">
       <h3>Review, preview, submit</h3>
       <div class="panel-sub">Run a 60-second pre-flight to see 5 sample profiles before committing the full pipeline. Then submit.</div>
+
+      ${clarifyHtml}
 
       <div class="review-grid">
         <div>Operator</div><div>${esc(d.operatorName)} · ${esc(d.operatorEmail)}</div>
@@ -1491,26 +1566,165 @@ function renderStep4() {
         </div>
       ` : ''}
 
-      <div class="panel-actions">
-        <button class="btn" id="btn-back">← Back</button>
-        <button class="btn" id="btn-preview">Run pre-flight (1 query, 5 samples)</button>
-        <button class="btn primary" id="btn-submit">Submit & start full sourcing</button>
-      </div>
+      ${actionsHtml}
     </div>
   `;
   wireNav();
-  document.getElementById('btn-submit').addEventListener('click', () => submitWizard(false));
-  document.getElementById('btn-preview').addEventListener('click', () => submitWizard(true));
+  wireClarifyActions();
+
+  // Eagerly fire the clarify call on entering step 4 (Q2 from design review).
+  // Skips if a result is already cached for this draft, or if a request is
+  // already in flight (clarifyLoading guard).
+  if (!state.clarifyLoading && !state.clarifyResult) {
+    runClarify();
+  }
 }
 
-async function submitWizard(preview) {
+/* ---------- v3.6 Clarification helpers ---------- */
+function renderClarifyPanel() {
+  if (state.clarifyLoading) {
+    return `<div class="clarify-panel loading"><span class="clarify-icon">⟳</span><div class="clarify-body">Checking your brief — extracting trainer-profile keywords if your input is messy…</div></div>`;
+  }
+  const r = state.clarifyResult;
+  if (!r) return '';
+  if (r.status === 'clear') {
+    return `<div class="clarify-panel ok"><span class="clarify-icon">✓</span><div class="clarify-body"><strong>Your brief is clear.</strong> Ready to submit.</div></div>`;
+  }
+  if (r.status === 'needs_clarification') {
+    const issues = (r.issues || []).map(i => `<li>${esc(i)}</li>`).join('');
+    const draftKws = (r.draft && Array.isArray(r.draft.keywords)) ? r.draft.keywords : [];
+    const questions = (r.questions || []).map(q => `<li>${esc(q)}</li>`).join('');
+    return `
+      <div class="clarify-panel suggest">
+        <span class="clarify-icon">💡</span>
+        <div class="clarify-body">
+          <h4>I made some assumptions — did you mean this?</h4>
+          ${issues ? `<ul>${issues}</ul>` : ''}
+          <span class="clarify-label">Suggested keywords (edit if needed)</span>
+          <textarea id="clarify-keywords" rows="4">${esc(draftKws.join('\n'))}</textarea>
+          ${questions ? `<div class="clarify-questions"><strong>Questions to refine the search (optional — answer in "Specific direction" on step 3):</strong><ul style="margin:0;padding-left:18px;">${questions}</ul></div>` : ''}
+        </div>
+      </div>
+    `;
+  }
+  if (r.status === 'unsalvageable') {
+    const examples = (r.examples || []).map(ex => `<li><code>${esc(ex.input)}</code> — ${esc(ex.why)}</li>`).join('');
+    return `
+      <div class="clarify-panel blocked">
+        <span class="clarify-icon">⚠</span>
+        <div class="clarify-body">
+          <h4>I can't process this brief yet</h4>
+          <p>${esc(r.reason || 'Input was too sparse or noisy.')}</p>
+          ${examples ? `<p><strong>Examples that work:</strong></p><ul>${examples}</ul>` : ''}
+          <p style="color:var(--ink-3);font-size:12px;">Click ← Back to refine the brief, then return here.</p>
+        </div>
+      </div>
+    `;
+  }
+  return '';
+}
+
+function renderClarifyActions() {
+  const r = state.clarifyResult;
+  const status = r && r.status;
+  if (status === 'unsalvageable') {
+    return `
+      <div class="panel-actions">
+        <button class="btn" id="btn-back">← Back to edit brief</button>
+      </div>
+    `;
+  }
+  if (status === 'needs_clarification') {
+    return `
+      <div class="panel-actions">
+        <button class="btn" id="btn-back">← Back to edit</button>
+        <button class="btn" id="btn-override" title="Submit your original input as-is. The pipeline cleaner will still try to tidy it up as a safety net.">Submit my original anyway</button>
+        <button class="btn primary" id="btn-use-suggested" title="Use the suggested keywords (you can edit them above first), then submit.">✓ Use suggested & submit</button>
+      </div>
+    `;
+  }
+  // clear OR loading — show standard buttons
+  return `
+    <div class="panel-actions">
+      <button class="btn" id="btn-back">← Back</button>
+      <button class="btn" id="btn-preview">Run pre-flight (1 query, 5 samples)</button>
+      <button class="btn primary" id="btn-submit">Submit & start full sourcing</button>
+    </div>
+  `;
+}
+
+function wireClarifyActions() {
+  const r = state.clarifyResult;
+  const status = r && r.status;
+  const submit = document.getElementById('btn-submit');
+  if (submit) submit.addEventListener('click', () => submitWizard(false, status === 'clear'));
+  const preview = document.getElementById('btn-preview');
+  if (preview) preview.addEventListener('click', () => submitWizard(true, status === 'clear'));
+  const useSugg = document.getElementById('btn-use-suggested');
+  if (useSugg) useSugg.addEventListener('click', () => useSuggestedAndSubmit());
+  const override = document.getElementById('btn-override');
+  if (override) override.addEventListener('click', () => submitWizard(false, false));
+}
+
+async function runClarify() {
   const d = state.draft;
-  const btnSubmit = document.getElementById('btn-submit');
+  const reqId = ++state.clarifyReqId;
+  state.clarifyLoading = true;
+  state.clarifyResult = null;
+  // Re-render to show the loading panel immediately
+  if (state.step === 4) renderStep4();
+  try {
+    const payload = {
+      title:    (d.roles[0] && d.roles[0].title) || d.domain || '',
+      domain:   d.domain.startsWith('Other') ? d.customDomain : d.domain,
+      keywords: d.keywords,
+      roles:    d.roles,
+      must:     d.must,
+      should:   d.should,
+      mustNot:  d.mustNot,
+      geo:      d.location,
+    };
+    const result = await api('POST', '/api/briefs/clarify', payload);
+    if (reqId !== state.clarifyReqId) return; // a newer request superseded
+    state.clarifyResult = result;
+  } catch (e) {
+    if (reqId !== state.clarifyReqId) return;
+    // On clarify failure, don't block — fall through to "clear" so operator can submit
+    state.clarifyResult = { status: 'clear', _err: e.message };
+  } finally {
+    if (reqId === state.clarifyReqId) {
+      state.clarifyLoading = false;
+      if (state.step === 4) renderStep4();
+    }
+  }
+}
+
+function useSuggestedAndSubmit() {
+  // Read the (possibly edited) suggested keywords from the textarea, replace
+  // the draft's keywords, then submit with confirmedClean=true so the pipeline
+  // skips its own auto-cleaner (the operator already engaged with the suggestion).
+  const ta = document.getElementById('clarify-keywords');
+  if (ta) {
+    const cleaned = ta.value.split('\n').map(s => s.trim()).filter(Boolean);
+    if (cleaned.length === 0) {
+      toast('At least one keyword is required.', 'error');
+      return;
+    }
+    state.draft.keywords = cleaned.join('\n');
+  }
+  submitWizard(false, true);
+}
+
+async function submitWizard(preview, confirmedClean) {
+  const d = state.draft;
+  const allButtons = ['btn-submit', 'btn-preview', 'btn-use-suggested', 'btn-override'].map(id => document.getElementById(id)).filter(Boolean);
+  allButtons.forEach(b => { b.disabled = true; });
+  const btnSubmit  = document.getElementById('btn-submit');
   const btnPreview = document.getElementById('btn-preview');
-  if (btnSubmit) btnSubmit.disabled = true;
-  if (btnPreview) btnPreview.disabled = true;
-  if (preview && btnPreview) btnPreview.textContent = 'Running pre-flight…';
-  if (!preview && btnSubmit) btnSubmit.textContent = 'Submitting…';
+  const btnUse     = document.getElementById('btn-use-suggested');
+  if (preview && btnPreview)  btnPreview.textContent = 'Running pre-flight…';
+  if (!preview && btnSubmit)  btnSubmit.textContent = 'Submitting…';
+  if (!preview && btnUse)     btnUse.textContent = 'Submitting…';
   try {
     const titleParts = [];
     if (d.roles.length && d.roles[0].title) titleParts.push(d.roles.map(r => r.title).filter(Boolean).slice(0, 2).join(' + '));
@@ -1535,6 +1749,10 @@ async function submitWizard(preview) {
       advanced: d.advanced,
       steering: d.steering,
       operator: { name: d.operatorName, email: d.operatorEmail },
+      // v3.6: signals to the pipeline that the operator already engaged with
+      // the clarify-endpoint diagnostic and chose to proceed. Pipeline skips
+      // its own keyword auto-cleaner (no double-Haiku cost).
+      confirmedClean: !!confirmedClean,
     };
     const r = await api('POST', '/api/briefs', payload);
     if (preview) {

@@ -1,5 +1,15 @@
 /**
- * RJP Sourcing Pipeline — v3.5
+ * RJP Sourcing Pipeline — v3.6
+ *
+ * v3.6 (2026-05-02): Conversational pre-submit clarification. New
+ * `clarifyInput` helper + POST /api/briefs/clarify endpoint return a
+ * verdict (clear / needs_clarification / unsalvageable) with diagnostic
+ * issues, a suggested clean draft of the keywords, and clarifying questions.
+ * Wizard step 4 calls it on entry and shows the verdict inline. Operator
+ * can use the suggestion (`confirmedClean: true`, skips pipeline cleaner)
+ * or override with the original input (pipeline cleaner remains as safety
+ * net). Unsalvageable verdict blocks submission with a clear reason +
+ * working examples.
  *
  * v3.5 (2026-05-02): Two robustness fixes from the Splunk-brief audit:
  *   1. Smart keyword cleanup — handles paste from WhatsApp/email/LLM output/
@@ -1842,6 +1852,127 @@ Rules:
   }
 }
 
+/* ---------- Clarify-input flow (v3.6) ----------
+   Conversational pre-submit clarification. The wizard's review step calls
+   POST /api/briefs/clarify before letting the operator hit Submit. Returns
+   one of three verdicts:
+
+     "clear"               — input is fine, proceed to /api/briefs as today.
+     "needs_clarification" — input was messy; here's a draft of what we
+                             think you meant + clarifying questions. Operator
+                             can confirm-and-submit (with confirmedClean: true)
+                             or override-and-submit-original.
+     "unsalvageable"       — input is too sparse / too noisy to extract any
+                             trainer profile from. Submit is blocked; the
+                             operator must refine before submitting.
+
+   When operator confirms a draft, the frontend submits with confirmedClean:
+   true and the pipeline skips its own auto-cleaner. When they override,
+   the pipeline's cleaner remains as a safety net (legacy behaviour). */
+
+function generateClarifyingQuestions(brief) {
+  const qs = [];
+  const hasMust    = Array.isArray(brief.must)    && brief.must.length    > 0;
+  const hasShould  = Array.isArray(brief.should)  && brief.should.length  > 0;
+  const hasMustNot = Array.isArray(brief.mustNot) && brief.mustNot.length > 0;
+  const geo = (brief.geo || '').toLowerCase().trim();
+  const hasSpecificGeo = geo && geo !== 'india' && geo !== 'all india';
+
+  // Surface only questions whose answer would meaningfully tighten the search.
+  if (!hasMust && !hasShould) {
+    qs.push('Any specific certifications, years of experience, or skills required? (e.g., "Splunk Core Certified", "8+ years")');
+  }
+  if (!hasMustNot) {
+    qs.push('Anything to AVOID? (e.g., specific firms, certifications, or roles you don\'t want)');
+  }
+  if (!hasSpecificGeo) {
+    qs.push('Specific cities within India, or open to anywhere in India?');
+  }
+  qs.push('Are you looking for trainers (delivery), consultants (advisory), or both?');
+  return qs.slice(0, 3);
+}
+
+async function clarifyInput(brief, briefId) {
+  const rawKeywords = Array.isArray(brief.keywords) ? brief.keywords.filter(k => typeof k === 'string') : [];
+  const title  = brief.title  || '';
+  const domain = brief.domain || '';
+  const roles  = brief.roles  || [];
+  const hasUsableRoles = roles.some(r => r && (r.title || r.skill));
+
+  // Total bust: nothing to work with.
+  if (rawKeywords.length === 0 && !hasUsableRoles && !domain.trim()) {
+    return {
+      status: 'unsalvageable',
+      reason: 'No keywords, roles, or domain information provided. The brief needs at least one indication of what kind of trainer you are looking for — a technology / domain plus a role hint (Trainer / Consultant / SME / Architect).',
+      examples: [
+        { input: 'Aurora PostgreSQL DBA Trainer',                    why: 'Clear technology + role.' },
+        { input: 'Salesforce Admin Consultant in India, 8+ years',   why: 'Technology + role + filters.' },
+        { input: 'Cybersecurity SME with OSCP, freelance, India',    why: 'Domain + role + certification + employment hint.' },
+      ],
+    };
+  }
+
+  // Have keywords — analyse them.
+  if (rawKeywords.length > 0) {
+    const cleaned = await smartCleanKeywords(rawKeywords, domain, title, briefId);
+
+    if (!cleaned.wasMessy) {
+      return { status: 'clear' };
+    }
+
+    // Cleaner returned 0 usable keywords — unsalvageable unless we have roles to fall back to.
+    if (cleaned.keywords.length === 0) {
+      if (hasUsableRoles) {
+        return {
+          status: 'needs_clarification',
+          issues: [
+            `Your keywords field looked like prose / instructions / section headers — none could be turned into searchable keywords. We can still run using your role(s): ${roles.filter(r => r && (r.title || r.skill)).map(r => '"' + (r.title || r.skill) + '"').join(', ')}.`,
+          ],
+          draft: { keywords: [] },
+          questions: generateClarifyingQuestions(brief),
+          originalKeywords: rawKeywords,
+        };
+      }
+      return {
+        status: 'unsalvageable',
+        reason: 'Your keywords field contained only prose / instructions / section headers (no searchable keywords were extractable), and no roles or domain were provided either.',
+        examples: [
+          { input: 'Splunk Observability Trainer',                why: '1-3 word role with technology.' },
+          { input: 'Aurora PostgreSQL DBA',                        why: 'Specific technology + role suffix.' },
+          { input: 'AWS Solutions Architect Trainer, 10+ yrs',     why: 'Technology + role + experience hint.' },
+        ],
+      };
+    }
+
+    // Salvageable — needs clarification with a draft.
+    const issues = [];
+    if (cleaned.proseDropped && cleaned.proseDropped.length) {
+      const sample = cleaned.proseDropped.slice(0, 3)
+        .map(k => '"' + k.slice(0, 60) + (k.length > 60 ? '…' : '') + '"').join(', ');
+      issues.push(`${cleaned.proseDropped.length} of your entries looked like prose, instructions, or section headers — not searchable keywords. Examples: ${sample}.`);
+    }
+    if (rawKeywords.length > 8) {
+      issues.push(`You provided ${rawKeywords.length} keyword entries — 4-8 focused keywords typically produce better quality.`);
+    }
+    if (cleaned.llmExtracted) {
+      issues.push('I used Haiku to extract trainer-profile keywords from your input.');
+    } else if (cleaned.wasMessy) {
+      issues.push('I tidied newlines, bullets, and trailing colons from your input.');
+    }
+
+    return {
+      status: 'needs_clarification',
+      issues,
+      draft: { keywords: cleaned.keywords },
+      questions: generateClarifyingQuestions(brief),
+      originalKeywords: rawKeywords,
+    };
+  }
+
+  // No keywords but have roles or domain — pipeline can derive keywords. Clear.
+  return { status: 'clear' };
+}
+
 /* ---------- Main pipeline ---------- */
 async function runPipeline(briefId, opts = {}) {
   const brief = store.get(briefId);
@@ -1868,7 +1999,12 @@ async function runPipeline(briefId, opts = {}) {
     // colons) or — when prose is detected — asks Haiku to extract proper
     // trainer-profile keywords. Original messy input is preserved on the
     // brief as `originalMessyKeywords` for audit.
-    if (Array.isArray(brief.keywords) && brief.keywords.length > 0 && !previewMode) {
+    //
+    // v3.6: when `confirmedClean: true` is set on the brief (the operator
+    // already saw the clarify-endpoint diagnostics in the wizard and chose
+    // to proceed with their input), skip the auto-cleaner — they already
+    // engaged with the suggestions, no need to run Haiku twice.
+    if (Array.isArray(brief.keywords) && brief.keywords.length > 0 && !previewMode && !brief.confirmedClean) {
       const stopClean = stageStart('Keyword cleanup');
       const cleaned = await smartCleanKeywords(brief.keywords, brief.domain, brief.title, briefId);
       stopClean();
@@ -2228,4 +2364,4 @@ function reapOrphansOnBoot() {
   if (reaped) console.log(`[boot reaper] marked ${reaped} orphan(s) as failed.`);
 }
 
-module.exports = { runPipeline, runWithFeedback, startWatchdog, reapOrphansOnBoot, OUTPUT_DIR, DEFAULT_BIGFIRM_EXCLUSIONS };
+module.exports = { runPipeline, runWithFeedback, startWatchdog, reapOrphansOnBoot, OUTPUT_DIR, DEFAULT_BIGFIRM_EXCLUSIONS, clarifyInput };
