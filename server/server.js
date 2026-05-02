@@ -71,7 +71,7 @@ app.get('/healthz', (req, res) => {
   res.json({
     ok: true,
     ts: new Date().toISOString(),
-    version: '3.10.1',
+    version: '3.11.0',
     uptimeSec: Math.round((Date.now() - _bootedAt) / 1000),
     storage: process.env.DATABASE_URL ? 'postgres' : 'filesystem',
     dirty,
@@ -237,7 +237,7 @@ app.post('/api/briefs/clarify', auth.requireAuth, async (req, res) => {
   }
 });
 
-/* v3.11.0: AskUserQuestion follow-up. Given a (possibly partial) brief draft,
+/* v3.10.1: AskUserQuestion follow-up. Given a (possibly partial) brief draft,
    Haiku generates up to 15 multi-choice clarifying questions covering only the
    fields that are MISSING or AMBIGUOUS. Answers come back from the chat-style
    input UI as a clarifying-answers block appended to the draft's steering
@@ -462,7 +462,7 @@ app.delete('/api/persistent-exclusions/:id', auth.requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-/* ---------- Candidate scoring (v3.11.0) ----------
+/* ---------- Candidate scoring (v3.10.1) ----------
    GET    /api/briefs/:id/scores         — list scores for this brief
    POST   /api/briefs/:id/scores         — { candidateUrl, candidateName, score: 'selected'|'hold'|'rejected', note?, scoredBy? }
    DELETE /api/briefs/:id/scores         — body or query: { candidateUrl } removes a single score

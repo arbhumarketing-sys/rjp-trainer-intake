@@ -1,5 +1,14 @@
 /**
- * RJP Sourcing Pipeline — v3.10.1
+ * RJP Sourcing Pipeline — v3.11.0
+ *
+ * v3.11.0 (2026-05-02 evening): Adds Phase 1.2 (L1.2) live-web named-trainer
+ * probe via Perplexity Sonar Pro. Sits between Phase 1 (Claude knowledge prior)
+ * and Phase 2 (Apify Google source-mining). Same ask as Phase 1 — named Indian
+ * trainers with LinkedIn + evidence — but grounded in live web search, so it
+ * picks up trainers active after the Claude cutoff, recent course launches,
+ * fresh meetup organisers, and platforms Claude indexes weakly. ~$0.015 per
+ * keyword (Sonar Pro). No-op while PERPLEXITY_API_KEY is unset — pipeline log
+ * shows "[Phase 1.2] skipped" once per brief and continues to Phase 2.
  *
  * v3.10.1 (2026-05-02): Closes the v3.9 learning loop. multiPassRerank now
  * also reads accumulated `candidate_scores` from PRIOR briefs whose keywords
