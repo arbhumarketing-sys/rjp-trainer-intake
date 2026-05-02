@@ -1,5 +1,14 @@
 /**
- * RJP Sourcing Pipeline — v3.4
+ * RJP Sourcing Pipeline — v3.5
+ *
+ * v3.5 (2026-05-02): Two robustness fixes from the Splunk-brief audit:
+ *   1. Smart keyword cleanup — handles paste from WhatsApp/email/LLM output/
+ *      Word docs/course outlines. Mechanical strip + Haiku-driven extraction
+ *      when prose is detected. Original messy input preserved as
+ *      `originalMessyKeywords` for audit.
+ *   2. Post-classifier regex safety net — guarantees BIG_FIRM/NON_INDIA/
+ *      MUSTNOT_HIT rules are honored even when the LLM classifier hallucinates
+ *      past them. Regex is authoritative on hard-exclude rules.
  *
  * v3.4 (2026-05-02): Excel output now matches the 14-column Word-doc spec
  * (Name, Role, Company, Domain Skill, Location, Email Official + Personal,
@@ -1691,6 +1700,148 @@ async function buildXlsx(brief, accepted, rejected, bp, timings) {
   return file;
 }
 
+/* ---------- Smart keyword cleanup (v3.5) ----------
+   RJP operators paste keywords from anywhere — WhatsApp messages, emails,
+   LLM output (ChatGPT/Claude/Perplexity), Word documents, course outlines.
+   The 2026-05-02 Splunk Brief 2 had a 12-item "keywords" array with entries
+   like "Give the suitable freelance trainer/...", "Configuration via:",
+   "Shape", "Forwarders" — clearly TOC fragments and instruction sentences.
+   The pipeline ran 12 garbage Google queries and accepted civil engineers
+   and chemists as Splunk trainers because keywords like "Shape" matched
+   unrelated profiles. Defense in two layers:
+
+   1. Mechanical cleanup — split on newlines, strip bullets/numbering,
+      strip trailing colons, strip markdown decorations. Always runs.
+   2. Prose detection + LLM extraction — if any remaining keyword looks
+      like prose (>12 words, imperative verb, question, instruction
+      reference), route the entire raw input through Haiku to extract
+      a clean trainer-profile keyword list. ~$0.001 + 6-9s, only fires
+      when input was actually messy. */
+
+function mechanicalCleanKeywords(rawKeywords) {
+  if (!Array.isArray(rawKeywords)) return [];
+  const out = [];
+  for (const raw of rawKeywords) {
+    if (typeof raw !== 'string') continue;
+    // Pasted text often has line breaks within a single "keyword" cell
+    const lines = raw.split(/[\n\r]+/);
+    for (let line of lines) {
+      line = line.trim();
+      // Strip leading bullets/numbering: "1.", "1)", "•", "-", "*", "→", "★"
+      line = line.replace(/^(?:\d+[.\)]|[•\-\*→★▪·>])\s+/, '').trim();
+      // Strip surrounding markdown bold/italic and quotes
+      line = line.replace(/^[\*_"'`]+|[\*_"'`]+$/g, '').trim();
+      // Strip trailing colon/semicolon (section headers like "Configuration via:")
+      line = line.replace(/[:;]+$/, '').trim();
+      // Skip empty / single-character noise
+      if (!line || line.length < 2) continue;
+      out.push(line);
+    }
+  }
+  return out;
+}
+
+function looksLikeProse(keyword) {
+  if (typeof keyword !== 'string') return false;
+  const k = keyword.trim();
+  const wordCount = k.split(/\s+/).filter(Boolean).length;
+  // Long: > 12 words is almost certainly a sentence not a keyword
+  if (wordCount > 12) return true;
+  // Imperative / instructional opener
+  if (/^\s*(?:Give|Provide|List|Suggest|Recommend|Find|Generate|Create|Tell|Show|Share|Deliver|Return|Fetch|Identify|Need|Looking|Looking for|We need|Please)\b/i.test(k)) return true;
+  // Question form
+  if (/[?]/.test(k)) return true;
+  // Instruction / reference markers in long-ish strings
+  if (wordCount > 5 && /\b(?:below|above|TOC|following|the system|the user|hereafter|aforementioned)\b/i.test(k)) return true;
+  // Multiple commas in a long-ish keyword = compound clauses
+  if (wordCount > 8 && k.split(',').length > 3) return true;
+  // Has a colon mid-string (like "Environment: Splunk Cloud Free Trial")
+  if (/[^:][:][^:].{3,}/.test(k)) return true;
+  return false;
+}
+
+async function smartCleanKeywords(rawKeywords, briefDomain, briefTitle, briefId) {
+  if (!Array.isArray(rawKeywords) || rawKeywords.length === 0) {
+    return { keywords: [], wasMessy: false };
+  }
+  // Always do mechanical cleanup first
+  const mech = mechanicalCleanKeywords(rawKeywords);
+  const proseKws = mech.filter(k => looksLikeProse(k));
+  const cleanKws = mech.filter(k => !looksLikeProse(k));
+  const wasMechanicallyChanged = mech.length !== rawKeywords.length;
+
+  // Happy path: nothing prose-like, return clean (mechanical may have already
+  // split and tidied — preserve that as the new keyword list)
+  if (proseKws.length === 0 && cleanKws.length > 0) {
+    return {
+      keywords: cleanKws.slice(0, 8),
+      wasMessy: wasMechanicallyChanged,
+    };
+  }
+
+  // Some keywords look like prose. Route ALL raw input through Haiku to
+  // extract trainer-profile keywords from the messy paste.
+  const llmAvailable = hasLlmClient();
+  if (!llmAvailable) {
+    if (briefId) logAndSave(briefId, `[keyword cleanup] dropped ${proseKws.length} prose-like "keyword(s)" — no LLM available for smart parse: ${proseKws.map(k => '"' + k.slice(0, 40) + '..."').join(', ')}`, 'warn');
+    return {
+      keywords: cleanKws.slice(0, 8),
+      wasMessy: true,
+      proseDropped: proseKws,
+    };
+  }
+
+  const client = getAnthropic();
+  if (!client) {
+    if (briefId) logAndSave(briefId, `[keyword cleanup] LLM client init failed; dropped ${proseKws.length} prose-like keyword(s)`, 'warn');
+    return { keywords: cleanKws.slice(0, 8), wasMessy: true, proseDropped: proseKws };
+  }
+
+  const blob = rawKeywords.filter(k => typeof k === 'string').join('\n').slice(0, 3000);
+  const sys = `You extract TRAINER-PROFILE search keywords from messy pasted text. The input may be: course outlines, WhatsApp messages, email snippets, LLM output (ChatGPT/Claude/Perplexity), Word document fragments, table-of-contents lists, or any unstructured prose.
+
+Return ONLY a JSON array of 4-8 short keywords (each 1-5 words) describing the kind of TRAINER the operator wants to source.
+
+GOOD examples (return shapes like these): "Splunk Observability Trainer", "Salesforce Admin Consultant", "Aurora PostgreSQL DBA", "Cybersecurity SME", "DevOps Solution Architect"
+
+BAD examples (do NOT return these): "Configuration via:", "Forwarders", "below TOC", "40 Hours", "Environment Assumptions", individual technologies that aren't roles, syllabus headers, instruction sentences.
+
+Rules:
+- If a domain is given, ATTACH a role suffix (Trainer/Consultant/Architect/SME/Expert/Instructor/Coach) to the domain to form keywords.
+- Skip topic/syllabus items, course module names, instructions, and section headers.
+- Output JSON array, no commentary.`;
+
+  const user = `Brief title: ${briefTitle || '(none)'}\nBrief domain: ${briefDomain || '(none)'}\nMessy input:\n${blob}\n\nExtract clean trainer-profile keywords. JSON array only.`;
+
+  try {
+    const resp = await withRetry(
+      () => client.messages.create({
+        model: process.env.CLAUDE_MODEL_FAST || 'claude-haiku-4-5-20251001',
+        max_tokens: 300,
+        system: sys,
+        messages: [{ role: 'user', content: user }],
+      }),
+      { maxAttempts: 2, baseDelayMs: 3000 }
+    );
+    const text = (resp.content[0] && resp.content[0].text) || '';
+    const arr = parseJsonArray(text);
+    const clean = arr
+      .filter(s => typeof s === 'string')
+      .map(s => s.trim())
+      .filter(s => s.length >= 2 && s.length <= 80 && !looksLikeProse(s))
+      .slice(0, 8);
+    if (clean.length === 0) {
+      if (briefId) logAndSave(briefId, `[keyword cleanup] LLM returned no usable keywords; falling back to ${cleanKws.length} mechanical-clean keyword(s)`, 'warn');
+      return { keywords: cleanKws.slice(0, 8), wasMessy: true, proseDropped: proseKws };
+    }
+    if (briefId) logAndSave(briefId, `[keyword cleanup] LLM extracted ${clean.length} clean keyword(s) from messy paste: ${clean.map(k => '"' + k + '"').join(', ')}`, 'warn');
+    return { keywords: clean, wasMessy: true, proseDropped: proseKws, llmExtracted: true };
+  } catch (e) {
+    if (briefId) logAndSave(briefId, `[keyword cleanup] LLM cleanup failed (${(e.message || '').slice(0, 80)}); using mechanical-clean keywords (${cleanKws.length})`, 'warn');
+    return { keywords: cleanKws.slice(0, 8), wasMessy: true, proseDropped: proseKws };
+  }
+}
+
 /* ---------- Main pipeline ---------- */
 async function runPipeline(briefId, opts = {}) {
   const brief = store.get(briefId);
@@ -1710,6 +1861,33 @@ async function runPipeline(briefId, opts = {}) {
   };
 
   try {
+    // v3.5: Smart keyword cleanup runs BEFORE normalizeBrief so the rest of
+    // the pipeline sees only clean keywords. If the operator pasted a course
+    // outline, WhatsApp message, LLM output, or any prose into the keywords
+    // field, this either mechanical-cleans it (split newlines, strip bullets/
+    // colons) or — when prose is detected — asks Haiku to extract proper
+    // trainer-profile keywords. Original messy input is preserved on the
+    // brief as `originalMessyKeywords` for audit.
+    if (Array.isArray(brief.keywords) && brief.keywords.length > 0 && !previewMode) {
+      const stopClean = stageStart('Keyword cleanup');
+      const cleaned = await smartCleanKeywords(brief.keywords, brief.domain, brief.title, briefId);
+      stopClean();
+      if (cleaned.wasMessy) {
+        if (cleaned.keywords.length === 0) {
+          // Hard fail with a clear error rather than silently producing garbage
+          const reason = 'Your keywords field contained only prose / instructions / section headers — no usable trainer-profile keywords could be extracted. Please provide 1-8 short keywords (1-5 words each) describing the trainer profile, e.g. "Splunk Observability Trainer", "Salesforce Admin Consultant".';
+          store.update(briefId, { status: 'failed', error: reason, retryable: false, originalMessyKeywords: brief.keywords });
+          logAndSave(briefId, reason, 'err');
+          return;
+        }
+        store.update(briefId, {
+          keywords: cleaned.keywords,
+          originalMessyKeywords: brief.keywords,
+        });
+        brief.keywords = cleaned.keywords;
+      }
+    }
+
     const bp = normalizeBrief(brief);
     store.update(briefId, {
       status: previewMode ? 'preview' : 'discovery',
@@ -1811,6 +1989,32 @@ async function runPipeline(briefId, opts = {}) {
       harvest: harvestMap[canonLinkedinUrl(it.url)] || null,
     }));
     const classifications = await classifySignalsBatched(itemsWithHarvest, bp, briefId);
+
+    // v3.5: Hard-exclusion safety net. The LLM classifier sometimes hallucinates
+    // past explicit BIG_FIRM / NON_INDIA / MUSTNOT_HIT rules — observed on
+    // 2026-05-02 Splunk Brief 1 where 4 TCS/Infosys current employees were
+    // classified PRACTITIONER instead of BIG_FIRM despite the explicit rule
+    // in the system prompt. Re-run regex on every non-rejected candidate;
+    // if regex says hard-reject, override the LLM verdict. Regex is the
+    // authoritative source on these three rules — operators MUST be able
+    // to trust customExclusions / mustNot / India-only filters.
+    let safetyOverrides = 0;
+    for (let i = 0; i < classifications.length; i++) {
+      const cls = classifications[i];
+      if (!cls || REJECTED_SIGNALS.has(cls.signal)) continue;
+      const { it, harvest } = itemsWithHarvest[i];
+      const regexCls = classifySignalRegex(it, bp, harvest);
+      if (regexCls.signal === 'BIG_FIRM' || regexCls.signal === 'NON_INDIA' || regexCls.signal === 'MUSTNOT_HIT') {
+        classifications[i] = {
+          signal: regexCls.signal,
+          reason: `${regexCls.reason} [safety override of LLM '${cls.signal}']`,
+        };
+        safetyOverrides++;
+      }
+    }
+    if (safetyOverrides > 0) {
+      logAndSave(briefId, `[classifier safety] regex overrode ${safetyOverrides} LLM verdict(s) on hard-exclude rules (BIG_FIRM/NON_INDIA/MUSTNOT_HIT)`, 'warn');
+    }
 
     const scored = normalised.map((it, i) => {
       const harvest = itemsWithHarvest[i].harvest;
