@@ -1,5 +1,13 @@
 /**
- * RJP Sourcing Pipeline — v3.10.0
+ * RJP Sourcing Pipeline — v3.10.1
+ *
+ * v3.10.1 (2026-05-02): Closes the v3.9 learning loop. multiPassRerank now
+ * also reads accumulated `candidate_scores` from PRIOR briefs whose keywords
+ * or domain overlap the active brief, formatted as OPERATOR-VERDICT PRIORS
+ * in the Sonnet rerank system prompt — the team's actual booking decisions
+ * become a self-reinforcing signal alongside `seed-client-gradings.json`.
+ * Excludes the active brief itself (avoid self-priming feedback). Capped at
+ * 30 rows in prompt to keep size sane. Empty when no prior verdicts match.
  *
  * v3.10.0 (2026-05-02): Chat-style input + AskUserQuestion follow-up flow
  * (server-side: new POST /api/briefs/ask-questions endpoint in server.js
@@ -351,6 +359,31 @@ function findRelevantGradings(bp) {
     if (kwHit || domHit) matched.push(g);
   }
   return matched;
+}
+
+/* v3.10.1 — Operator-verdict priors. Format saved Selected/Hold/Rejected
+   verdicts from PRIOR similar briefs as a few-shot block for the Sonnet
+   rerank. Caller filters by keyword/domain overlap (store.getOperatorVerdictsForBriefContext).
+   Returns '' when no matching verdicts exist. */
+function formatOperatorVerdictsForPrompt(verdicts) {
+  if (!Array.isArray(verdicts) || verdicts.length === 0) return '';
+  const counts = { selected: 0, hold: 0, rejected: 0 };
+  for (const v of verdicts) counts[v.score] = (counts[v.score] || 0) + 1;
+  const byVerdict = { selected: [], hold: [], rejected: [] };
+  for (const v of verdicts) {
+    if (byVerdict[v.score]) byVerdict[v.score].push(v);
+  }
+  const renderRow = (v) => {
+    const ctx = v.briefTitle ? ` (from prior brief "${String(v.briefTitle).slice(0, 40)}")` : '';
+    const noteStr = v.note ? ` — note: ${String(v.note).slice(0, 80)}` : '';
+    return `      • ${v.candidateName || '(unnamed)'}${ctx}${noteStr}`;
+  };
+  const examples = ['selected', 'hold', 'rejected'].map(s => {
+    const rows = byVerdict[s].slice(0, 5);
+    if (!rows.length) return null;
+    return `    ${s.toUpperCase()} (${counts[s] || 0} total in this rerank context):\n` + rows.map(renderRow).join('\n');
+  }).filter(Boolean).join('\n');
+  return `\n\nOPERATOR-VERDICT PRIORS (Selected/Hold/Rejected calls already made by THIS team on PRIOR similar briefs — these are the team's own booking decisions, treat as authoritative learning signal):\n${examples}\n\nWhen ranking, prefer profiles matching the SELECTED pattern; downgrade HOLD-style profiles; treat anything matching REJECTED as a hard demote. These priors compose with the CLIENT-SIDE GRADING PRIORS above — when both fire, they should agree on direction.`;
 }
 
 function formatGradingsForPrompt(gradings) {
@@ -1445,6 +1478,20 @@ async function multiPassRerank(accepted, brief, bp, briefId) {
   const outputN = bp.advanced.qualityCap || QUALITY_CAP_DEFAULT;
   if (briefId) logAndSave(briefId, `[rerank] Sonnet holistic rerank: top ${top.length} → top ${outputN}`);
 
+  // v3.10.1 — Operator-verdict priors. Pull Selected/Hold/Rejected calls
+  // from prior similar briefs and format as a few-shot block. Done BEFORE
+  // the main try so failures in this query don't tank the whole rerank.
+  let operatorPriorBlock = '';
+  try {
+    const verdicts = await store.getOperatorVerdictsForBriefContext(briefId, bp.keywords, bp.domain);
+    if (verdicts && verdicts.length) {
+      operatorPriorBlock = formatOperatorVerdictsForPrompt(verdicts);
+      if (briefId) logAndSave(briefId, `[rerank] loaded ${verdicts.length} operator-verdict prior(s) from prior similar briefs`);
+    }
+  } catch (e) {
+    if (briefId) logAndSave(briefId, `[rerank] operator-verdict prior load failed (${(e.message || '').slice(0, 80)}) — continuing without`, 'warn');
+  }
+
   try {
     const sys = `You are an experienced sourcer at a B2B trainer placement firm in India. You re-rank candidates for a client brief based on holistic fit — cross-checking the classifier signal, the bio text, the source tier, and the web-verification result. You catch what the per-candidate scorer misses (e.g. a PRACTITIONER whose bio actually mentions 8 yrs of internal training, or a TRAINER_EXPLICIT whose tech is adjacent-but-not-target).
 
@@ -1456,7 +1503,7 @@ Brief context:
   Should include:  ${(bp.should || []).join(', ') || '(none)'}
   Must NOT:        ${(bp.mustNot || []).join(', ') || '(none)'}
   Excluded firms:  ${bp.exclusions.slice(0, 10).join(', ')}
-  Operator steering: ${((bp.steering || '').slice(0, 800)) || '(none)'}${formatGradingsForPrompt(findRelevantGradings(bp))}
+  Operator steering: ${((bp.steering || '').slice(0, 800)) || '(none)'}${formatGradingsForPrompt(findRelevantGradings(bp))}${operatorPriorBlock}
 
 Output: JSON array of EXACTLY the top ${outputN} candidates (or fewer if input is smaller), best first.
 Format: [{"i": <input index>, "why": "<≤18 word holistic judgment>"}, ...]`;

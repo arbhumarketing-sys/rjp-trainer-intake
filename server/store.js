@@ -321,6 +321,62 @@ async function removeCandidateScore(briefId, candidateUrl) {
   }
 }
 
+/* v3.10.1 — cross-brief operator-verdict lookup. multiPassRerank uses this to
+   pull Selected/Hold/Rejected verdicts from PRIOR briefs that share keywords
+   or domain with the active brief. These accumulate into the rerank prompt as
+   OPERATOR-VERDICT PRIORS — the team's actual booking decisions become a
+   self-reinforcing learning signal layered on top of seed-client-gradings.json.
+   Excludes the active brief itself (use the brief's own current scores via
+   getCandidateScores). Capped at 100 raw rows + 30 returned to keep prompt
+   size sane. */
+async function getOperatorVerdictsForBriefContext(currentBriefId, briefKeywords, briefDomain) {
+  if (!pool) return [];
+  try {
+    const r = await pool.query(`
+      SELECT cs.brief_id, cs.candidate_url, cs.candidate_name, cs.score, cs.note, cs.created_at,
+             b.data->>'title'    AS brief_title,
+             b.data->>'domain'   AS brief_domain,
+             b.data->'keywords'  AS brief_keywords
+      FROM candidate_scores cs
+      LEFT JOIN briefs b ON b.id = cs.brief_id
+      WHERE cs.brief_id != $1
+      ORDER BY cs.created_at DESC
+      LIMIT 100
+    `, [currentBriefId || '']);
+
+    const briefKwLower = (Array.isArray(briefKeywords) ? briefKeywords : []).map(k => String(k || '').toLowerCase()).filter(Boolean);
+    const briefDomLower = String(briefDomain || '').toLowerCase().trim();
+
+    const matched = [];
+    for (const row of r.rows) {
+      const otherDom = String(row.brief_domain || '').toLowerCase().trim();
+      let otherKws = [];
+      try {
+        if (Array.isArray(row.brief_keywords)) {
+          otherKws = row.brief_keywords.map(k => String(k || '').toLowerCase()).filter(Boolean);
+        }
+      } catch (_) { /* ignore — JSONB shape drift */ }
+
+      const domHit = otherDom && briefDomLower && (otherDom.includes(briefDomLower) || briefDomLower.includes(otherDom));
+      const kwHit = otherKws.some(ok => briefKwLower.some(bk => bk.includes(ok) || ok.includes(bk)));
+      if (domHit || kwHit) {
+        matched.push({
+          briefId: row.brief_id,
+          briefTitle: row.brief_title,
+          candidateUrl: row.candidate_url,
+          candidateName: row.candidate_name,
+          score: row.score,
+          note: row.note,
+        });
+      }
+    }
+    return matched.slice(0, 30);
+  } catch (e) {
+    console.warn('[store] getOperatorVerdictsForBriefContext failed:', e.message);
+    return [];
+  }
+}
+
 /* ---------- Persistent exclusions (v3.2) ---------- */
 // Always-exclude terms that survive across all briefs. RJP adds InfraCloud,
 // AnalyticsVidhya, etc. once instead of typing them into customExclusions
@@ -416,6 +472,8 @@ module.exports = {
   addPersistentExclusion, getPersistentExclusions, removePersistentExclusion,
   // candidate scoring (v3.9.0)
   saveCandidateScore, getCandidateScores, removeCandidateScore,
+  // operator-verdict priors for cross-brief rerank biasing (v3.10.1)
+  getOperatorVerdictsForBriefContext,
   // seed
   loadSeedIfFresh,
 };

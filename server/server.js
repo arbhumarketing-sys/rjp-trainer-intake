@@ -70,7 +70,7 @@ app.get('/healthz', (req, res) => {
   res.json({
     ok: true,
     ts: new Date().toISOString(),
-    version: '3.10.0',
+    version: '3.10.1',
     uptimeSec: Math.round((Date.now() - _bootedAt) / 1000),
     storage: process.env.DATABASE_URL ? 'postgres' : 'filesystem',
     dirty,
@@ -235,7 +235,7 @@ app.post('/api/briefs/clarify', auth.requireAuth, async (req, res) => {
   }
 });
 
-/* v3.10.0: AskUserQuestion follow-up. Given a (possibly partial) brief draft,
+/* v3.10.1: AskUserQuestion follow-up. Given a (possibly partial) brief draft,
    Haiku generates up to 15 multi-choice clarifying questions covering only the
    fields that are MISSING or AMBIGUOUS. Answers come back from the chat-style
    input UI as a clarifying-answers block appended to the draft's steering
@@ -460,7 +460,7 @@ app.delete('/api/persistent-exclusions/:id', auth.requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-/* ---------- Candidate scoring (v3.10.0) ----------
+/* ---------- Candidate scoring (v3.10.1) ----------
    GET    /api/briefs/:id/scores         — list scores for this brief
    POST   /api/briefs/:id/scores         — { candidateUrl, candidateName, score: 'selected'|'hold'|'rejected', note?, scoredBy? }
    DELETE /api/briefs/:id/scores         — body or query: { candidateUrl } removes a single score
@@ -544,7 +544,7 @@ app.use((err, req, res, next) => {
   reapOrphansOnBoot();
 
   app.listen(PORT, () => {
-    console.log(`RJP Sourcing Portal v3.10.0 listening on :${PORT}`);
+    console.log(`RJP Sourcing Portal v3.10.1 listening on :${PORT}`);
     console.log(`  Apify Google actor:   ${process.env.APIFY_GOOGLE_ACTOR || process.env.APIFY_ACTOR || 'apify~rag-web-browser'}`);
     console.log(`  Apify LinkedIn actor: ${process.env.APIFY_LINKEDIN_ACTOR || 'harvestapi/linkedin-profile-scraper'}`);
     console.log(`  LLM client:           ${process.env.ANTHROPIC_VIA_CLAUDE_CLI === 'true' ? 'claude CLI subprocess (Max plan)' : (process.env.ANTHROPIC_API_KEY ? 'API key' : 'DISABLED')}`);
