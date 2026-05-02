@@ -2269,7 +2269,37 @@ async function runPipeline(briefId, opts = {}) {
     // Detection: scan each non-rejected reason for negation phrases near
     // training/domain terms. If found, demote to NOISE (rejected). Defends
     // against LLM contradicting itself when steering is strict.
-    const NEGATION_RE = /\b(?:no\s+(?:training|teaching|netbrain|splunk|salesforce|domain)\b|not\s+(?:a\s+)?(?:trainer|relevant|netbrain|splunk|domain)\b|rejected\s*[—\-:]|out\s+of\s+(?:domain|netbrain|splunk|aws|salesforce|scope)\b|without\s+\w+\s+(?:depth|expertise|experience|training|focus)\b|lacks?\s+\w+\s+(?:depth|expertise|experience|training|focus)\b|non-\w+\s+focus\b|no\s+teaching\s+evidence\b|skilled\s+but\s+no\s+training\b)/i;
+    //
+    // v3.7.1 (2026-05-02 same day): broaden the regex after observing the
+    // post-v3.7 Splunk-1 retry STILL letting through 2/3 noise candidates
+    // with reasons "REJECT: DevSecOps/AIOps, no observability tooling depth"
+    // and "REJECT: Pure Azure cloud, no observability focus". Three gaps:
+    //   1. `REJECT:` (no -ed) — original pattern only caught `rejected:`
+    //   2. `no observability tooling depth` — original needed the term right
+    //      after `no\s+`; the broader `no \w+ \w+ (depth|focus|...)` form was
+    //      missing. Now matches 1-3 words between "no" and the qualifier.
+    //   3. `Pure Azure cloud, no <X>` — uppercase-led "REJECT-like" phrases.
+    const NEGATION_RE = new RegExp([
+      // Reason starts or contains an explicit reject/not-a-X verdict label
+      String.raw`\breject(?:s|ed)?\s*[:\-—]`,                                       // REJECT:, rejects:, rejected—
+      String.raw`^\s*reject\b`,                                                      // bare leading "REJECT"
+      String.raw`\bnot\s+(?:a\s+)?(?:trainer|relevant|in[\-\s]?domain|netbrain|splunk|salesforce|aws|domain)\b`,
+      String.raw`\bout\s+of\s+(?:domain|netbrain|splunk|aws|salesforce|scope|focus)\b`,
+      // "no <1-3 words> {qualifier}" — generalised negation near a quality term
+      String.raw`\bno\s+(?:\w+\s+){0,3}(?:training|teaching|expertise|experience|relevance|evidence|focus|depth|tooling|knowledge|background)\b`,
+      // "without <X> {qualifier}"
+      String.raw`\bwithout\s+(?:\w+\s+){0,3}(?:depth|expertise|experience|training|focus|knowledge|tooling|background)\b`,
+      // "lacks <X> {qualifier}"
+      String.raw`\blacks?\s+(?:\w+\s+){0,3}(?:depth|expertise|experience|training|focus|knowledge|tooling|background)\b`,
+      // "non-X focus" / "non-domain focus"
+      String.raw`\bnon[\-\s]\w+\s+focus\b`,
+      // "skilled but no <X>" — common LLM contradiction pattern
+      String.raw`\bskilled\s+but\s+no\s+(?:training|relevance|experience|teaching)\b`,
+      // "Pure <X>, no <Y>" — explicit out-of-domain framing
+      String.raw`\bpure\s+\w+(?:[\s,]\w+){0,3},?\s*no\s+\w+\b`,
+      // "out of scope" / "out-of-scope"
+      String.raw`\bout[\-\s]of[\-\s]scope\b`,
+    ].join('|'), 'i');
     let consistencyOverrides = 0;
     for (let i = 0; i < classifications.length; i++) {
       const cls = classifications[i];
