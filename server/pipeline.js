@@ -1,5 +1,18 @@
 /**
- * RJP Sourcing Pipeline — v3.7
+ * RJP Sourcing Pipeline — v3.8.0
+ *
+ * v3.8.0 (2026-05-02): Client-side grading seed file
+ * (`server/seed-client-gradings.json`) loaded at module init. The reviewer at
+ * RJP's end client (Saranya) graded 8 candidates from a Perplexity-generated
+ * Splunk Observability list as Selected (3) / Hold-for-call (4) / Rejected (1)
+ * with verbatim reasons. Distilled into rules + few-shot examples and injected
+ * into `multiPassRerank`'s system prompt as CLIENT-SIDE GRADING PRIORS when
+ * the active brief's keywords overlap a grading. Sonnet biases toward the
+ * same selectivity standard the end-client applies — reduces "looked good in
+ * Excel, client said no" mismatch. DOMAIN_TUNING also gains a `splunk` entry
+ * reflecting Saranya's strict "BOTH keywords + explicit Trainer role" rule.
+ * Schema is generic so future client gradings (other domains/reviewers) just
+ * append to the array — no code change needed.
  *
  * v3.7 (2026-05-02): Two robustness fixes from the Netbrain + Splunk-1
  * Form-1 feedback iterations:
@@ -249,6 +262,7 @@ const DOMAIN_TUNING = {
   'python':           'Look for Python web (Django/FastAPI/Flask) or scientific-computing teachers. Differentiate from data-science overlap.',
   'devops':           'Look for engineers with multi-tool depth (Terraform + K8s + CI/CD). Pool: ex-startup SREs and DevOps Bengaluru meetup organisers.',
   'backstage':        'Very thin pool in India. Consider InfraCloud + ex-Spotify-style platform-engineering practitioners. May need adjacent-tech (developer portals, internal developer platforms) expansion.',
+  'splunk':           'Client-side reviewer (Saranya, 2026-05-02) selects ONLY profiles with BOTH "Splunk" AND "Observability" present in the bio AND an explicit Trainer role (Freelance, Corporate, Independent, or Instructor). Holds Consultants — they need a verification call before sending. Rejects Architects (regardless of depth), profiles missing both keywords, and out-of-India locations. Currently-employed-at-Splunk practitioners are HOLD not SELECT (not freelance). Match this strictness in the rerank.',
 };
 
 function domainHint(domain) {
@@ -264,6 +278,78 @@ function domainHint(domain) {
 function steeringHint(steering) {
   if (!steering || !steering.trim()) return '';
   return `\n\nOPERATOR STEERING (apply when ranking / generating candidates):\n${steering.trim()}`;
+}
+
+/* ---------- Client-side grading seed (v3.8.0) ---------- */
+// Load `seed-client-gradings.json` at module init. Each grading is a list of
+// candidates with their reviewer-assigned verdicts (selected/hold/rejected) and
+// verbatim reasons. multiPassRerank looks up gradings whose keywords or domain
+// overlap the active brief's, then injects them into Sonnet's system prompt as
+// few-shot examples — the goal is to bias the rerank toward the same standard
+// the end-client reviewer actually applies.
+//
+// Graceful degradation: missing or malformed seed file = empty list = the
+// rerank prompt is unchanged (legacy behaviour). Logged once at boot so the
+// operator knows whether priors are active.
+const SEED_GRADINGS_FILE = path.join(__dirname, 'seed-client-gradings.json');
+let _CLIENT_GRADINGS = [];
+try {
+  if (fs.existsSync(SEED_GRADINGS_FILE)) {
+    const parsed = JSON.parse(fs.readFileSync(SEED_GRADINGS_FILE, 'utf8'));
+    _CLIENT_GRADINGS = Array.isArray(parsed.gradings) ? parsed.gradings : [];
+    if (_CLIENT_GRADINGS.length) {
+      console.log(`[pipeline v3.8] loaded ${_CLIENT_GRADINGS.length} client-side grading(s) from ${path.basename(SEED_GRADINGS_FILE)} — will inject into rerank when keywords overlap`);
+    }
+  }
+} catch (e) {
+  console.warn('[pipeline v3.8] seed-client-gradings.json malformed; gradings disabled:', e.message);
+}
+
+function findRelevantGradings(bp) {
+  if (!_CLIENT_GRADINGS.length) return [];
+  const briefKws = (bp.keywords || []).map(k => String(k).toLowerCase());
+  const briefDom = String(bp.domain || '').toLowerCase();
+  const matched = [];
+  for (const g of _CLIENT_GRADINGS) {
+    const gKws = (g.keywords || []).map(k => String(k).toLowerCase());
+    const gDom = String(g.domain || '').toLowerCase();
+    // Keyword overlap: substring match either direction (so 'splunk' grading matches
+    // both 'Splunk Trainer' and 'Splunk Cloud Observability' briefs).
+    const kwHit = gKws.some(gk => briefKws.some(bk => bk.includes(gk) || gk.includes(bk)));
+    const domHit = !!(gDom && briefDom && (briefDom.includes(gDom) || gDom.includes(briefDom)));
+    if (kwHit || domHit) matched.push(g);
+  }
+  return matched;
+}
+
+function formatGradingsForPrompt(gradings) {
+  if (!gradings.length) return '';
+  const blocks = gradings.map(g => {
+    const counts = { selected: 0, hold: 0, rejected: 0 };
+    for (const c of (g.candidates || [])) counts[c.verdict] = (counts[c.verdict] || 0) + 1;
+    const rules = (g.rules_distilled || []).map((r, i) => `  ${i + 1}. ${r}`).join('\n');
+    // Show up to 2 examples per verdict tier — enough for pattern, not so much
+    // that the prompt bloats. Verbatim reason is the key signal.
+    const byVerdict = { selected: [], hold: [], rejected: [] };
+    for (const c of (g.candidates || [])) {
+      if (byVerdict[c.verdict]) byVerdict[c.verdict].push(c);
+    }
+    const renderRow = (c) => `      • ${c.name} (${c.place || '?'}) — "${String(c.headline || '').slice(0, 110)}" → reason: ${c.reason}`;
+    const examples = ['selected', 'hold', 'rejected'].map(v => {
+      const rows = byVerdict[v].slice(0, 2);
+      if (!rows.length) return null;
+      return `    ${v.toUpperCase()} (${counts[v] || 0} total in this grading):\n` + rows.map(renderRow).join('\n');
+    }).filter(Boolean).join('\n');
+    return `Reviewer: ${g.reviewer}
+Brief: ${g.source_brief}
+Date: ${g.received_at}
+Distribution: ${counts.selected || 0} selected / ${counts.hold || 0} hold / ${counts.rejected || 0} rejected
+Distilled rules:
+${rules}
+Examples:
+${examples}`;
+  }).join('\n\n---\n\n');
+  return `\n\nCLIENT-SIDE GRADING PRIORS (apply this standard — these are how the END CLIENT actually decides what to Select vs Hold vs Reject):\n${blocks}\n\nWhen ranking, prefer profiles matching the SELECTED pattern, downgrade those matching HOLD, treat anything matching REJECTED as a hard demote. Reviewer's verbatim reasons above are authoritative.`;
 }
 
 function buildKeywordsFromRoles(brief) {
@@ -1296,7 +1382,7 @@ Brief context:
   Should include:  ${(bp.should || []).join(', ') || '(none)'}
   Must NOT:        ${(bp.mustNot || []).join(', ') || '(none)'}
   Excluded firms:  ${bp.exclusions.slice(0, 10).join(', ')}
-  Operator steering: ${((bp.steering || '').slice(0, 800)) || '(none)'}
+  Operator steering: ${((bp.steering || '').slice(0, 800)) || '(none)'}${formatGradingsForPrompt(findRelevantGradings(bp))}
 
 Output: JSON array of EXACTLY the top ${outputN} candidates (or fewer if input is smaller), best first.
 Format: [{"i": <input index>, "why": "<≤18 word holistic judgment>"}, ...]`;
