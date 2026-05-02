@@ -1,5 +1,16 @@
 /**
- * RJP Sourcing Pipeline — v3.11.0
+ * RJP Sourcing Pipeline — v3.12.0
+ *
+ * v3.12.0 (2026-05-02 night): Closes the last open SOP gap from
+ * "Trainer search manual steps.docx" Step 3 — "Also identify lab providers
+ * (if applicable)". New Phase 3d (claudeLabProviders) calls Haiku to surface
+ * Indian sandbox vendors, lab providers, and institutes-with-labs for the
+ * target tech. Gated behind briefRequiresLabs(bp) — fires only when the
+ * chat-flow lab-question answer is anything other than "Not needed", or
+ * the operator used "lab" language in must/should/steering. Output goes
+ * into a dedicated "Lab providers" Excel worksheet (separate from the
+ * trainer table) so RJP can present labs as a parallel ask to the client.
+ * ~$0.005 per keyword (Haiku); silent skip when irrelevant.
  *
  * v3.11.0 (2026-05-02 evening): Adds Phase 1.2 (L1.2) live-web named-trainer
  * probe via Perplexity Sonar Pro. Sits between Phase 1 (Claude knowledge prior)
@@ -144,6 +155,26 @@ if (_USE_CLI) {
 function hasLlmClient() {
   if (_USE_CLI) return !!ClaudeCliClient;
   return !!(Anthropic && process.env.ANTHROPIC_API_KEY);
+}
+
+// v3.12.0 — Phase 3d gate. SOP: "Also identify lab providers (if applicable)".
+// "Applicable" = the brief explicitly cares about lab access. We detect that
+// via the chat-flow's CLARIFYING ANSWERS block in steering ("Lab/hands-on
+// environment setup capability: Required / Trainer should provide / Preferred")
+// or any free-text mention of lab access in must/should/steering. The negative
+// match ("Not needed") short-circuits — operators who answered "no labs" don't
+// pay the Haiku tax.
+function briefRequiresLabs(bp) {
+  if (process.env.DISABLE_LAB_PROVIDERS === '1') return false;
+  const haystack = [
+    bp.steering || '',
+    ...(bp.must || []),
+    ...(bp.should || []),
+  ].join(' ').toLowerCase();
+  if (/lab[^.]{0,40}(?:not\s+needed|not\s+required|\bn\/?a\b|none)/.test(haystack)) return false;
+  if (/\b(?:lab\s*(?:access|setup|environment|infra(?:structure)?|capability|provider|hands.?on)|hands.?on\s+lab|sandbox|lab\s*credits?)\b/.test(haystack)) return true;
+  if (/lab[^.]{0,40}(?:required|preferred|mandatory|essential|provide|setup)/.test(haystack)) return true;
+  return false;
 }
 
 // Perplexity Sonar Pro (Phase 1.2 / L1.2). Required-by-feature, optional-at-boot:
@@ -834,6 +865,56 @@ async function perplexityKnowledgeCall(briefId, kw, bp) {
   } catch (e) {
     if (briefId) logAndSave(briefId, `[L1.2] Perplexity gave up for "${kw}" after retries: ${(e.message || '').slice(0, 100)}. Continuing to Phase 2.`, 'warn');
     console.warn('[perplexity L1.2]', e.message);
+    return [];
+  }
+}
+
+/* L3d — Indian lab providers / sandbox vendors (v3.12.0).
+   Closes the SOP gap from "Trainer search manual steps.docx" Step 3:
+   "If still no results... Also identify lab providers (if applicable)."
+   Fires only when briefRequiresLabs(bp) is true (operator answered the chat-
+   flow's lab question with anything other than "Not needed", or used "lab"
+   language in must/should/steering). Output goes into a dedicated
+   "Lab providers" worksheet of the Excel — separate from the trainer table
+   so RJP can recommend the lab as a parallel ask to the client. ~$0.005 per
+   keyword (Haiku). Skipped silently when irrelevant — most briefs won't
+   trigger it, so no log noise. */
+async function claudeLabProviders(briefId, kw, bp) {
+  const client = getAnthropic();
+  if (!client) return [];
+  try {
+    const sys = `You list Indian lab providers, sandbox vendors, and institutes that supply hands-on lab environments for corporate training in a specific technology. Includes: vendor-provided sandbox / trial programmes (e.g., Splunk Cloud Trial, AWS / Azure / GCP credits-for-trainers, Salesforce Trailhead playgrounds, Snowflake free-tier), independent lab-environment providers, and Indian institutes that rent out lab access for off-site training. Concise, India-focused, verifiable.${domainHint(bp && bp.domain)}${steeringHint(bp && bp.steering)}`;
+    const user = `Technology / skill: ${kw}\nList up to 6 Indian lab options that can support hands-on training in this. Output JSON only, no prose: [{"name":"","type":"vendor-sandbox|lab-provider|institute|cloud-credit","website":"","location":"","capabilities":"","contact":""}].`;
+    const resp = await withRetry(
+      () => client.messages.create({
+        model: CLAUDE_FAST,
+        max_tokens: 800,
+        system: sys,
+        messages: [{ role: 'user', content: user }],
+      }),
+      {
+        maxAttempts: 2,
+        baseDelayMs: 3000,
+        onRetry: (attempt, delay, err) => {
+          if (briefId) logAndSave(briefId, `[L3d retry] Lab providers attempt ${attempt} for "${kw}" failed (status ${err.status || '?'}); retrying in ${Math.round(delay / 1000)}s`, 'warn');
+        },
+      }
+    );
+    const text = (resp.content[0] && resp.content[0].text) || '';
+    return parseJsonArray(text)
+      .filter(l => l && (l.name || l.website))
+      .map(l => ({
+        name:         String(l.name || '').slice(0, 120),
+        type:         String(l.type || '').slice(0, 40),
+        website:      String(l.website || '').slice(0, 200),
+        location:     String(l.location || '').slice(0, 80),
+        capabilities: String(l.capabilities || '').slice(0, 300),
+        contact:      String(l.contact || '').slice(0, 200),
+        keyword:      kw,
+      }));
+  } catch (e) {
+    if (briefId) logAndSave(briefId, `[L3d] Lab providers gave up for "${kw}" after retries: ${(e.message || '').slice(0, 100)}.`, 'warn');
+    console.warn('[claude L3d]', e.message);
     return [];
   }
 }
@@ -1902,6 +1983,28 @@ async function buildXlsx(brief, accepted, rejected, bp, timings) {
     wsE.getRow(r).alignment = { vertical: 'top', wrapText: true };
   }
 
+  // -------- 2b. Lab providers — Phase 3d output (v3.12.0) --------
+  // Only added when Phase 3d found at least one — most briefs don't request
+  // labs, so the sheet stays out of the workbook for those.
+  if (Array.isArray(bp.labProviders) && bp.labProviders.length) {
+    const wsL = wb.addWorksheet('Lab providers');
+    wsL.columns = [
+      { header: 'Name',          key: 'name',         width: 32 },
+      { header: 'Type',          key: 'type',         width: 18 },
+      { header: 'Website',       key: 'website',      width: 40 },
+      { header: 'Location',      key: 'location',     width: 22 },
+      { header: 'Capabilities',  key: 'capabilities', width: 60 },
+      { header: 'Contact',       key: 'contact',      width: 32 },
+      { header: 'Keyword',       key: 'keyword',      width: 22 },
+    ];
+    wsL.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    wsL.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF065F46' } };
+    bp.labProviders.forEach(l => wsL.addRow(l));
+    for (let r = 2; r <= wsL.rowCount; r++) {
+      wsL.getRow(r).alignment = { vertical: 'top', wrapText: true };
+    }
+  }
+
   // 2. Rejected — for audit, the 'why' per the verifiable-conclusion ask
   const wsR = wb.addWorksheet('Rejected (audit)');
   wsR.columns = [
@@ -2507,7 +2610,34 @@ async function runPipeline(briefId, opts = {}) {
       stop();
     }
 
-    logAndSave(briefId, `${normalised.length} unique items across all phases (1+2+3a/b/c)`);
+    // ---- PHASE 3d: lab providers / sandbox vendors (v3.12.0) ----
+    // SOP: "Also identify lab providers (if applicable)". Closes the last gap
+    // from Trainer-search-manual-steps.docx. Output goes into a separate
+    // "Lab providers" Excel worksheet — not mixed into the trainer table —
+    // so RJP can present labs as a parallel ask to the client when hands-on
+    // delivery is required. Fires only when the brief actually mentions
+    // labs (chat-flow's lab question or any free-text mention); silent
+    // skip otherwise so most briefs see no log noise.
+    bp.labProviders = [];
+    if (!previewMode && briefRequiresLabs(bp) && hasLlmClient()) {
+      const stop = stageStart('Phase 3d: Lab providers');
+      for (const kw of bp.keywords) {
+        const labs = await claudeLabProviders(briefId, kw, bp);
+        logAndSave(briefId, `[Phase 3d] Lab providers for "${kw}" → ${labs.length}`);
+        bp.labProviders = bp.labProviders.concat(labs);
+      }
+      const seen = new Set();
+      bp.labProviders = bp.labProviders.filter(l => {
+        const k = (l.website || l.name || '').toLowerCase();
+        if (!k || seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+      logAndSave(briefId, `[Phase 3d] ${bp.labProviders.length} unique lab providers after dedupe`);
+      stop();
+    }
+
+    logAndSave(briefId, `${normalised.length} unique trainer items across phases (1+2+3a/b/c)${bp.labProviders.length ? ` · ${bp.labProviders.length} lab providers (3d)` : ''}`);
 
     // ---- LinkedIn enrichment via harvestapi ----
     // Cap at 60: harvestapi charges ~$4/1k profiles ($0.24 per brief at the cap),
