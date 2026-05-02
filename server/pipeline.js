@@ -137,6 +137,12 @@ function hasLlmClient() {
   return !!(Anthropic && process.env.ANTHROPIC_API_KEY);
 }
 
+// Perplexity Sonar Pro (Phase 1.2 / L1.2). Required-by-feature, optional-at-boot:
+// hasPerplexity() returns false until PERPLEXITY_API_KEY is set, at which point
+// the Phase 1.2 block in runPipeline begins firing. No spend, no behavior change
+// while disabled.
+const { perplexityChat, hasPerplexity } = require('./perplexity-client');
+
 const OUTPUT_DIR = process.env.OUTPUT_DIR || path.join(__dirname, 'outputs');
 fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 
@@ -780,6 +786,45 @@ async function claudeKnowledgeCall(briefId, kw, bp) {
   } catch (e) {
     if (briefId) logAndSave(briefId, `[L1.1] Claude knowledge gave up for "${kw}" after retries: ${(e.message || '').slice(0, 100)}. Falling back to Google-only for this keyword.`, 'warn');
     console.warn('[claude L1.1]', e.message);
+    return [];
+  }
+}
+
+/* L1.2 — Perplexity Sonar Pro live-web probe (v3.11.0).
+   Same named-trainer ask as L1.1, but grounded in live web search rather than
+   Claude's training-data prior. Catches trainers who became active after the
+   Claude knowledge cutoff, recent course launches, fresh meetup organisers,
+   and trainers whose primary footprint is on platforms Claude indexes weakly
+   (UrbanPro listings, Substack, recent YouTube uploads). Each result carries
+   a citation URL from Sonar's web search, which we keep in _perplexitySource
+   so downstream classifier/rerank can use it as second-source evidence.
+   ~$0.015 per keyword (Sonar Pro). No-op when PERPLEXITY_API_KEY is unset. */
+async function perplexityKnowledgeCall(briefId, kw, bp) {
+  if (!hasPerplexity()) return [];
+  try {
+    const sys = `You are a sourcing assistant for a B2B trainer placement firm in India. Search the live web and return named freelance corporate trainers, independent instructors, consultants, SMEs, or architects in India who currently deliver training in the target technology. Do NOT return conference speakers without training-delivery evidence. Do NOT return employees of: ${bp.exclusions.slice(0, 8).join(', ')}.${domainHint(bp.domain)}${steeringHint(bp.steering)}`;
+    const user = `Technology / skill: ${kw}\nLocation: India only.\nMode: ${bp.searchMode === 'niche' ? 'niche (rare tech, prefer founders/principals of small Indian firms)' : 'standard'}\nReturn 5-10 currently-active named candidates verified from your web search. For each: name, LinkedIn URL (must be a real URL you found, not guessed), 1-line evidence of training-delivery (course, workshop, repeated training engagements), and the source URL where you verified them. Output ONLY a JSON array: [{"name":"","linkedin":"","evidence":"","source":""}]. No prose before or after the JSON.`;
+    const resp = await withRetry(
+      () => perplexityChat({ system: sys, user, maxTokens: 1500 }),
+      {
+        maxAttempts: 2,
+        baseDelayMs: 4000,
+        onRetry: (attempt, delay, err) => {
+          if (briefId) logAndSave(briefId, `[L1.2 retry] Perplexity attempt ${attempt} for "${kw}" failed (status ${err.status || '?'}); retrying in ${Math.round(delay / 1000)}s`, 'warn');
+        },
+      }
+    );
+    return parseJsonArray(resp.text).map(p => ({
+      url: p.linkedin || p.source || '',
+      metadata: { title: `${p.name} — Perplexity web L1.2` },
+      markdown: `${p.name}. ${p.evidence || ''}. India.${p.source ? ' Source: ' + p.source : ''}`,
+      _q: { keyword: kw, source: 'perplexity_web', tier: 'L1.2' },
+      _claudeNote: p.evidence || '',
+      _perplexitySource: p.source || '',
+    })).filter(p => p.url || p.metadata.title);
+  } catch (e) {
+    if (briefId) logAndSave(briefId, `[L1.2] Perplexity gave up for "${kw}" after retries: ${(e.message || '').slice(0, 100)}. Continuing to Phase 2.`, 'warn');
+    console.warn('[perplexity L1.2]', e.message);
     return [];
   }
 }
@@ -2361,6 +2406,26 @@ async function runPipeline(briefId, opts = {}) {
       stop();
     } else if (!previewMode) {
       logAndSave(briefId, `Phase 1 skipped — no LLM client (set ANTHROPIC_VIA_CLAUDE_CLI=true or ANTHROPIC_API_KEY). Falling back to Google-only.`, 'warn');
+    }
+
+    // ---- PHASE 1.2: live-web named-trainer probe (Perplexity Sonar Pro) — v3.11.0 ----
+    // Sits between Phase 1 (Claude knowledge prior) and Phase 2 (Google source-
+    // mining). Same named-trainer ask, but Sonar Pro grounds the answer in live
+    // web search results — picks up trainers active after the Claude cutoff,
+    // recent course launches, fresh meetup organisers, and platforms Claude
+    // indexes weakly. ~$0.015 per keyword. Gated behind PERPLEXITY_API_KEY:
+    // skipped silently in the pipeline log when the key is unset, so this
+    // ships safely ahead of key provisioning.
+    if (!previewMode && hasPerplexity()) {
+      const stop = stageStart('Phase 1.2: Perplexity web');
+      for (const kw of bp.keywords) {
+        const items = await perplexityKnowledgeCall(briefId, kw, bp);
+        logAndSave(briefId, `[Phase 1.2] Perplexity web for "${kw}" → ${items.length} candidates`);
+        allItems = allItems.concat(items);
+      }
+      stop();
+    } else if (!previewMode) {
+      logAndSave(briefId, `[Phase 1.2] skipped — set PERPLEXITY_API_KEY to enable live-web named-trainer search`, 'info');
     }
 
     // ---- PHASE 2: keyword-combination expansion (Apify Google) — v3.9 framing ----

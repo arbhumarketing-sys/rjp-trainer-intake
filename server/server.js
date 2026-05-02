@@ -25,6 +25,7 @@ const crypto = require('crypto');
 const auth = require('./auth');
 const store = require('./store');
 const { runPipeline, runWithFeedback, startWatchdog, reapOrphansOnBoot, OUTPUT_DIR, DEFAULT_BIGFIRM_EXCLUSIONS, clarifyInput } = require('./pipeline');
+const { hasPerplexity } = require('./perplexity-client');
 
 let Anthropic = null;
 try { Anthropic = require('@anthropic-ai/sdk').default || require('@anthropic-ai/sdk'); } catch (_) {}
@@ -76,6 +77,7 @@ app.get('/healthz', (req, res) => {
     dirty,
     llm: process.env.ANTHROPIC_VIA_CLAUDE_CLI === 'true' ? 'claude-cli' : (process.env.ANTHROPIC_API_KEY ? 'api' : 'disabled'),
     cliQueue,
+    perplexity: { configured: hasPerplexity() },
   });
 });
 
@@ -235,7 +237,7 @@ app.post('/api/briefs/clarify', auth.requireAuth, async (req, res) => {
   }
 });
 
-/* v3.10.1: AskUserQuestion follow-up. Given a (possibly partial) brief draft,
+/* v3.11.0: AskUserQuestion follow-up. Given a (possibly partial) brief draft,
    Haiku generates up to 15 multi-choice clarifying questions covering only the
    fields that are MISSING or AMBIGUOUS. Answers come back from the chat-style
    input UI as a clarifying-answers block appended to the draft's steering
@@ -460,7 +462,7 @@ app.delete('/api/persistent-exclusions/:id', auth.requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-/* ---------- Candidate scoring (v3.10.1) ----------
+/* ---------- Candidate scoring (v3.11.0) ----------
    GET    /api/briefs/:id/scores         — list scores for this brief
    POST   /api/briefs/:id/scores         — { candidateUrl, candidateName, score: 'selected'|'hold'|'rejected', note?, scoredBy? }
    DELETE /api/briefs/:id/scores         — body or query: { candidateUrl } removes a single score
@@ -544,11 +546,12 @@ app.use((err, req, res, next) => {
   reapOrphansOnBoot();
 
   app.listen(PORT, () => {
-    console.log(`RJP Sourcing Portal v3.10.1 listening on :${PORT}`);
+    console.log(`RJP Sourcing Portal v3.11.0 listening on :${PORT}`);
     console.log(`  Apify Google actor:   ${process.env.APIFY_GOOGLE_ACTOR || process.env.APIFY_ACTOR || 'apify~rag-web-browser'}`);
     console.log(`  Apify LinkedIn actor: ${process.env.APIFY_LINKEDIN_ACTOR || 'harvestapi/linkedin-profile-scraper'}`);
     console.log(`  LLM client:           ${process.env.ANTHROPIC_VIA_CLAUDE_CLI === 'true' ? 'claude CLI subprocess (Max plan)' : (process.env.ANTHROPIC_API_KEY ? 'API key' : 'DISABLED')}`);
     console.log(`  CLI semaphore:        max ${process.env.MAX_CONCURRENT_CLI || '2'} concurrent subprocesses`);
+    console.log(`  Perplexity (L1.2):    ${hasPerplexity() ? `enabled (${process.env.PERPLEXITY_MODEL || 'sonar-pro'})` : 'DISABLED (set PERPLEXITY_API_KEY to enable)'}`);
     console.log(`  Storage:              ${process.env.DATABASE_URL ? 'Postgres' : 'filesystem (./data, no persistence)'}`);
     console.log(`  Output dir:           ${process.env.OUTPUT_DIR || './outputs'}`);
     startWatchdog();

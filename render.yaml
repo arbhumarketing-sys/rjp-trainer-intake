@@ -33,3 +33,11 @@ services:
         value: "claude-haiku-4-5-20251001"
       - key: CLAUDE_MODEL_SMART
         value: "claude-sonnet-4-5"
+      # ----- Perplexity Sonar Pro (Phase 1.2 / L1.2). Optional. While unset,
+      # the pipeline logs "[Phase 1.2] skipped" once per brief and proceeds to
+      # Phase 2 — zero spend, zero behavior change. Drop a pplx-... key from
+      # perplexity.ai/api here to enable live-web named-trainer search.
+      - key: PERPLEXITY_API_KEY
+        sync: false
+      - key: PERPLEXITY_MODEL
+        value: "sonar-pro"
