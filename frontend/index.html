@@ -630,6 +630,50 @@
     font-size: 13px;
   }
   .clarify-panel .clarify-questions strong { display: block; margin-bottom: 6px; color: var(--ink); }
+
+  /* v3.9.0 — Iteration history card (Vijay's "send him history & best matches" ask) */
+  .iter-card {
+    background: var(--panel);
+    border: 1px solid var(--accent);
+    border-left-width: 4px;
+    border-radius: var(--radius);
+    padding: 16px 18px;
+    margin: 14px 0;
+  }
+  .iter-card h3 { margin: 0 0 10px; font-size: 14px; font-weight: 600; color: var(--ink); display: flex; align-items: center; gap: 8px; }
+  .iter-card .rev-count { font-weight: 400; color: var(--ink-3); font-size: 12px; }
+  .iter-row { padding: 10px 0; border-bottom: 1px dashed var(--line-soft); }
+  .iter-row:last-child { border-bottom: none; padding-bottom: 0; }
+  .iter-row:first-child { padding-top: 0; }
+  .iter-rev { font-weight: 600; font-size: 13px; color: var(--accent); margin-bottom: 4px; }
+  .iter-meta { font-size: 12px; color: var(--ink-3); margin-bottom: 6px; }
+  .iter-low { display: inline-block; margin-left: 8px; padding: 1px 6px; background: var(--warn-soft); color: var(--warn); border-radius: 8px; font-weight: 500; font-size: 10.5px; }
+  .iter-fb { background: var(--bg); padding: 6px 10px; border-left: 2px solid var(--accent); margin: 6px 0; font-size: 12.5px; color: var(--ink-2); white-space: pre-wrap; }
+  .iter-names { font-size: 12.5px; color: var(--ink-2); margin: 4px 0; }
+  .iter-diff { font-size: 12px; margin: 2px 0; padding-left: 12px; }
+  .iter-new { color: var(--good); }
+  .iter-dropped { color: var(--bad); }
+
+  /* v3.9.0 — Verdict scoring buttons (Selected / Hold / Rejected per Saranya's grading taxonomy) */
+  .verdict-cell { white-space: nowrap; min-width: 240px; }
+  .verdict-btn {
+    padding: 4px 9px; margin-right: 4px;
+    font-size: 11.5px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--panel);
+    cursor: pointer;
+    transition: all 0.08s;
+    user-select: none;
+  }
+  .verdict-btn:hover { border-color: var(--ink-3); }
+  .verdict-btn:disabled { cursor: not-allowed; opacity: 0.5; }
+  .verdict-btn.vselected.on { background: var(--good); border-color: var(--good); color: white; font-weight: 600; }
+  .verdict-btn.vhold.on     { background: var(--warn); border-color: var(--warn); color: white; font-weight: 600; }
+  .verdict-btn.vrejected.on { background: var(--bad);  border-color: var(--bad);  color: white; font-weight: 600; }
+  .verdict-btn.vselected:hover:not(.on) { background: var(--good-soft); color: var(--good); border-color: var(--good); }
+  .verdict-btn.vhold:hover:not(.on)     { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
+  .verdict-btn.vrejected:hover:not(.on) { background: var(--bad-soft);  color: var(--bad);  border-color: var(--bad); }
 </style>
 </head>
 <body>
@@ -681,6 +725,9 @@ let state = {
   clarifyLoading: false,
   clarifyResult: null,       // null | { status, issues, draft, questions, ... }
   clarifyReqId: 0,           // bumped per request, used to drop stale responses
+  // v3.9.0 — candidate scoring cache. { briefId: { candidateUrl: 'selected'|'hold'|'rejected' } }
+  candidateScores: {},
+  scoresLoadedFor: null,     // briefId for which scores were last fetched (avoid re-fetching during polls)
 };
 function defaultDraft() {
   return {
@@ -903,6 +950,120 @@ function wireShell() {
     else                          toast('Backend warming up. Submission will start within ~10-15s.', '');
   });
   startClock();
+}
+
+/* ============================================================ */
+/* v3.9.0 — Candidate scoring + iteration helpers               */
+/* ============================================================ */
+async function loadScoresForBrief(briefId, force) {
+  // Idempotent — caches by scoresLoadedFor so polling re-renders don't spam /scores
+  if (!force && state.scoresLoadedFor === briefId) return state.candidateScores[briefId] || {};
+  state.scoresLoadedFor = briefId;
+  try {
+    const r = await api('GET', '/api/briefs/' + encodeURIComponent(briefId) + '/scores');
+    const map = {};
+    for (const s of (r.scores || [])) map[s.candidateUrl] = s.score;
+    state.candidateScores[briefId] = map;
+  } catch (e) {
+    console.warn('loadScoresForBrief failed:', e.message);
+    state.candidateScores[briefId] = state.candidateScores[briefId] || {};
+  }
+  return state.candidateScores[briefId];
+}
+
+async function setCandidateScore(briefId, candidateUrl, candidateName, verdict) {
+  if (!candidateUrl) { toast('No LinkedIn URL on this row — can\'t score.', 'error'); return; }
+  state.candidateScores[briefId] = state.candidateScores[briefId] || {};
+  const prev = state.candidateScores[briefId][candidateUrl];
+  state.candidateScores[briefId][candidateUrl] = verdict;
+  renderMain();
+  try {
+    await api('POST', '/api/briefs/' + encodeURIComponent(briefId) + '/scores', {
+      candidateUrl, candidateName: candidateName || '', score: verdict,
+    });
+    toast('Marked ' + verdict + '.', 'success');
+  } catch (e) {
+    if (prev) state.candidateScores[briefId][candidateUrl] = prev;
+    else delete state.candidateScores[briefId][candidateUrl];
+    renderMain();
+    toast('Save failed: ' + e.message, 'error');
+  }
+}
+
+async function clearCandidateScore(briefId, candidateUrl) {
+  state.candidateScores[briefId] = state.candidateScores[briefId] || {};
+  const prev = state.candidateScores[briefId][candidateUrl];
+  delete state.candidateScores[briefId][candidateUrl];
+  renderMain();
+  try {
+    await api('DELETE', '/api/briefs/' + encodeURIComponent(briefId) + '/scores?candidateUrl=' + encodeURIComponent(candidateUrl));
+    toast('Score cleared.', 'success');
+  } catch (e) {
+    if (prev) state.candidateScores[briefId][candidateUrl] = prev;
+    renderMain();
+    toast('Clear failed: ' + e.message, 'error');
+  }
+}
+
+function renderVerdictButtons(briefId, candidateUrl, candidateName) {
+  if (!candidateUrl) return '<span class="hint" style="font-size:11.5px;color:var(--ink-4);">no URL</span>';
+  const current = (state.candidateScores[briefId] || {})[candidateUrl] || '';
+  const verdicts = [
+    { v: 'selected', label: '✓ Selected' },
+    { v: 'hold',     label: '⏸ Hold' },
+    { v: 'rejected', label: '✗ Rejected' },
+  ];
+  return verdicts.map(({ v, label }) => `
+    <button class="verdict-btn v${v} ${current === v ? 'on' : ''}"
+            data-url="${esc(candidateUrl)}"
+            data-name="${esc(candidateName || '')}"
+            data-verdict="${v}"
+            title="${current === v ? 'Click again to clear this verdict' : 'Mark this candidate as ' + v}">${label}</button>
+  `).join('');
+}
+
+function extractCandNameForBtn(c) {
+  const t = (c && c.title) || '';
+  if (!t) return '';
+  // Title is typically "<Name> — <bio>" or "<Name> at <Co>"
+  return t.split(/[—–]|\s-\s|\bat\s/i)[0].trim().replace(/\s*\(.*?\)\s*/g, ' ').replace(/[.,;:|]+$/, '').trim().slice(0, 100);
+}
+
+function renderIterationSummary(b) {
+  const items = (b && b.iterationSummary) || [];
+  if (!items.length) return '';
+  const totalRuns = items.length;
+  // Newest first — operator wants most recent at the top
+  const ordered = items.slice().reverse();
+  const rows = ordered.map((s) => {
+    const dt = s.ts
+      ? new Date(s.ts).toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' })
+      : '?';
+    const newSec = (s.newlyEntered && s.newlyEntered.length)
+      ? `<div class="iter-diff iter-new">+ Newly in top 5: ${s.newlyEntered.map(esc).join(', ')}</div>` : '';
+    const dropSec = (s.dropped && s.dropped.length)
+      ? `<div class="iter-diff iter-dropped">− Dropped from top 5: ${s.dropped.map(esc).join(', ')}</div>` : '';
+    const fbSec = s.feedbackApplied
+      ? `<div class="iter-fb"><strong>Feedback applied:</strong> ${esc(s.feedbackApplied)}</div>` : '';
+    const lowSec = s.lowYield ? '<span class="iter-low">low-yield</span>' : '';
+    const topSec = (s.topNames || []).length
+      ? `<div class="iter-names"><strong>Top 5:</strong> ${s.topNames.map(esc).join(', ')}</div>`
+      : '<div class="iter-names" style="color:var(--ink-4);">(no top names — check brief)</div>';
+    return `
+      <div class="iter-row">
+        <div class="iter-rev">Run #${(s.rev || 0) + 1}</div>
+        <div class="iter-meta"><strong>${s.candidateCount || 0} candidates</strong> · ${esc(dt)} ${lowSec}</div>
+        ${fbSec}
+        ${topSec}
+        ${newSec}
+        ${dropSec}
+      </div>`;
+  }).join('');
+  return `
+    <div class="iter-card">
+      <h3>Iteration history <span class="rev-count">${totalRuns} run${totalRuns === 1 ? '' : 's'} · newest first</span></h3>
+      ${rows}
+    </div>`;
 }
 
 async function loadFeatureRequests() {
@@ -1849,6 +2010,7 @@ function renderDetail(m) {
         <th>Signal</th>
         <th>${mode === 'accept' ? 'Why accepted' : 'Why rejected'}</th>
         <th>Source</th>
+        ${mode === 'accept' ? '<th>Verdict <span style="font-weight:400;color:var(--ink-4);font-size:10.5px;">(client-grade)</span></th>' : ''}
       </tr></thead>
       <tbody>
         ${rows.map((c, i) => `
@@ -1858,6 +2020,7 @@ function renderDetail(m) {
             <td><span class="signal-pill signal-${esc(c.signal || '')}">${esc((c.signal || '').replace(/_/g, ' '))}</span></td>
             <td style="color:var(--ink-2);font-size:12.5px;">${esc(c.decision_reason || c.reason || '')}</td>
             <td>${c.url ? `<a href="${esc(c.url)}" target="_blank" rel="noopener">link</a>` : '—'}</td>
+            ${mode === 'accept' ? `<td class="verdict-cell">${renderVerdictButtons(b.id, c.url || '', extractCandNameForBtn(c))}</td>` : ''}
           </tr>
         `).join('')}
       </tbody>
@@ -1881,6 +2044,8 @@ function renderDetail(m) {
         <span>⚠</span>
         <span><strong>Low-yield run.</strong> ${esc(b.lowYieldReason || 'Fewer candidates than expected — review keywords and exclusions.')} You can re-run with adjusted feedback below.</span>
       </div>` : ''}
+
+      ${renderIterationSummary(b)}
 
       <div class="meta-grid">
         <div class="meta-cell"><span class="meta-label">Mode</span><span class="meta-val">${b.mode === 'niche' ? 'Niche' : 'Standard'}</span></div>
@@ -1994,6 +2159,30 @@ function renderDetail(m) {
   // wiring
   const logBox = m.querySelector('.log');
   if (logBox) logBox.scrollTop = logBox.scrollHeight;
+
+  // v3.9.0 — kick off scores fetch (idempotent — only fires when active brief
+  // changes, not on every poll). Triggers a re-render once scores are in.
+  if (state.scoresLoadedFor !== b.id && (status === 'complete' || status === 'preview_ready')) {
+    loadScoresForBrief(b.id).then(() => {
+      if (state.activeBriefId === b.id && state.view === 'detail') renderMain();
+    });
+  }
+
+  // v3.9.0 — wire verdict buttons (Selected / Hold / Rejected)
+  m.querySelectorAll('.verdict-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const url = btn.dataset.url;
+      const name = btn.dataset.name;
+      const verdict = btn.dataset.verdict;
+      if (!url) { toast('No URL on this candidate — can\'t score.', 'error'); return; }
+      const current = (state.candidateScores[b.id] || {})[url];
+      if (current === verdict) {
+        await clearCandidateScore(b.id, url);
+      } else {
+        await setCandidateScore(b.id, url, name, verdict);
+      }
+    });
+  });
 
   const rtb = document.getElementById('btn-retry');
   if (rtb) rtb.addEventListener('click', async () => {

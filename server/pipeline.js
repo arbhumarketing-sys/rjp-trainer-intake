@@ -1,5 +1,26 @@
 /**
- * RJP Sourcing Pipeline — v3.8.0
+ * RJP Sourcing Pipeline — v3.9.0
+ *
+ * v3.9.0 (2026-05-02): Three feature-shipments in one go.
+ *   1. Iteration summary (Vijay's "send him iteration history & best matches"
+ *      ask): runPipeline now records `iterationSummary[]` on the brief — one
+ *      entry per run with rev number, top-5 names, who newly entered, who
+ *      dropped vs the prior run, candidate count, and the feedback text that
+ *      drove the change. Rendered as a collapsible card at the top of the
+ *      detail view so Vijay can see the iteration trail at a glance.
+ *   2. Explicit 3-phase pipeline naming (Ramesh's framing): pipeline log
+ *      labels updated to PHASE 1 (top-of-stack named trainers via Claude
+ *      knowledge), PHASE 2 (keyword-combination expansion via Google), PHASE
+ *      3a (adjacent technologies), 3b (institutes), and the new 3c — founders
+ *      / principals at small Indian firms specialising in the target tech
+ *      (`claudeFoundersAtSmallFirms`). Phase 3c fires for niche briefs and
+ *      thin-result reruns. These small-firm founders are bookable for
+ *      high-touch corporate training even when they don't self-identify as
+ *      "trainers" — Ramesh's exact "alternative people" pool from the SOP.
+ *   3. Candidate-scoring schema lands (server table only this ship — UI
+ *      buttons in v3.9 frontend). Backend stores Selected/Hold/Rejected per
+ *      candidate (matches Saranya's grading taxonomy from v3.8.0). Future
+ *      reranks will read these as additional priors alongside the seed file.
  *
  * v3.8.0 (2026-05-02): Client-side grading seed file
  * (`server/seed-client-gradings.json`) loaded at module init. The reviewer at
@@ -783,6 +804,49 @@ async function claudeInstitutes(briefId, kw, bp) {
   } catch (e) {
     if (briefId) logAndSave(briefId, `[L3] Institutes gave up for "${kw}" after retries: ${(e.message || '').slice(0, 100)}.`, 'warn');
     console.warn('[claude L3]', e.message);
+    return [];
+  }
+}
+
+/* ---------- Phase 3c: Founders / principals at small Indian firms (v3.9.0) ----------
+   Ramesh's Phase 3 from the call: when straight trainer searches go thin,
+   look for founders/principals/owners of SMALL Indian firms (≤50 employees)
+   specialising in the target tech. They deliver training as part of their
+   billable consulting practice, even when they don't self-label as "trainer".
+   Fires when L1+L2+L3 still produced fewer than ~12 unique candidates, OR
+   when the brief is in niche mode. Costs ~$0.005 per keyword (Haiku).        */
+async function claudeFoundersAtSmallFirms(briefId, kw, bp) {
+  const client = getAnthropic();
+  if (!client) return [];
+  try {
+    const sys = `You list founders/principals/owners/CXOs of SMALL Indian firms (preferably 1-50 employees, NOT the big SI firms — exclude ${bp.exclusions.slice(0, 8).join(', ')}) that specialise in the target technology. They deliver corporate training as part of their consulting/services practice even when they don't self-label as "trainer". Pool: ex-FTEs of the principal vendor (Splunk, AWS, Salesforce etc.) who founded boutique consultancies. Concise, India-focused, verifiable.${domainHint(bp.domain)}${steeringHint(bp.steering)}`;
+    const user = `Technology / skill: ${kw}\nList up to 6 founders/principals at small Indian firms specialising in this. Output JSON: [{"name":"","firm":"","role":"Founder/Principal/Owner/CXO","city":"","linkedin":""}].`;
+    const resp = await withRetry(
+      () => client.messages.create({
+        model: CLAUDE_FAST,
+        max_tokens: 800,
+        system: sys,
+        messages: [{ role: 'user', content: user }],
+      }),
+      {
+        maxAttempts: 2,
+        baseDelayMs: 3000,
+        onRetry: (attempt, delay, err) => {
+          if (briefId) logAndSave(briefId, `[Phase 3c retry] Founders attempt ${attempt} for "${kw}" failed (status ${err.status || '?'}); retrying in ${Math.round(delay / 1000)}s`, 'warn');
+        },
+      }
+    );
+    const text = (resp.content[0] && resp.content[0].text) || '';
+    return parseJsonArray(text).map(p => ({
+      url: p.linkedin || '',
+      metadata: { title: `${p.name} — ${p.role || 'Founder'} at ${p.firm || ''}` },
+      markdown: `${p.name}. ${p.role || 'Founder'} at ${p.firm || ''}. ${p.city ? p.city + ', ' : ''}India. Small-firm ${(p.role || 'founder').toLowerCase()} — bookable for high-touch corporate training (Ramesh's Phase 3 alternative-people pool).`,
+      _q: { keyword: kw, source: 'claude_founders', tier: 'L_FOUNDERS' },
+      _claudeNote: `Founder/principal at ${p.firm || 'small firm'} — high-touch training-bookable per the SOP's Phase 3 framing`,
+    })).filter(p => p.url || (p.metadata && p.metadata.title));
+  } catch (e) {
+    if (briefId) logAndSave(briefId, `[Phase 3c] Founders gave up for "${kw}" after retries: ${(e.message || '').slice(0, 100)}.`, 'warn');
+    console.warn('[claude founders]', e.message);
     return [];
   }
 }
@@ -2227,47 +2291,54 @@ async function runPipeline(briefId, opts = {}) {
 
     const apifyClient = new ApifyClient({ token: apifyToken });
 
-    // ---- L1.1: Claude knowledge ----
+    // ---- PHASE 1: top-of-stack named trainers (Claude knowledge) — v3.9 framing ----
+    // Ramesh's Phase 1: "the perfect match, the curated list at the top."
     let allItems = [];
     if (!previewMode && hasLlmClient()) {
-      const stop = stageStart('L1.1 Claude knowledge');
+      const stop = stageStart('Phase 1: Claude knowledge');
       for (const kw of bp.keywords) {
         const items = await claudeKnowledgeCall(briefId, kw, bp);
-        logAndSave(briefId, `[L1.1] Claude knowledge for "${kw}" → ${items.length} candidates`);
+        logAndSave(briefId, `[Phase 1] Claude knowledge for "${kw}" → ${items.length} candidates`);
         allItems = allItems.concat(items);
       }
       stop();
     } else if (!previewMode) {
-      logAndSave(briefId, `L1.1 skipped — no LLM client (set ANTHROPIC_VIA_CLAUDE_CLI=true or ANTHROPIC_API_KEY). Falling back to Google-only.`, 'warn');
+      logAndSave(briefId, `Phase 1 skipped — no LLM client (set ANTHROPIC_VIA_CLAUDE_CLI=true or ANTHROPIC_API_KEY). Falling back to Google-only.`, 'warn');
     }
 
-    // ---- L1.3: Apify Google ----
-    const stopGoogle = stageStart('L1.3 Google search');
+    // ---- PHASE 2: keyword-combination expansion (Apify Google) — v3.9 framing ----
+    // Ramesh's Phase 2: "deeper combinations of keywords." 11 source toggles
+    // get interleaved per keyword (LinkedIn, UrbanPro, blogs, YouTube, Udemy,
+    // Indian platforms, authority directories, course platforms, Meetup,
+    // Eventbrite, GitHub-edu) plus domain-specific authority queries.
+    const stopGoogle = stageStart('Phase 2: Google search');
     const queries = buildGoogleQueries(brief, bp);
     const queriesToRun = previewMode ? queries.slice(0, 1) : queries;
-    logAndSave(briefId, `Built ${queries.length} queries; running ${queriesToRun.length}${previewMode ? ' (preview)' : ''}`);
+    logAndSave(briefId, `[Phase 2] Built ${queries.length} queries; running ${queriesToRun.length}${previewMode ? ' (preview)' : ''}`);
     for (let i = 0; i < queriesToRun.length; i++) {
       const q = queriesToRun[i];
-      logAndSave(briefId, `[L1.3 ${i + 1}/${queriesToRun.length}] ${q.query.slice(0, 110)}`);
+      logAndSave(briefId, `[Phase 2 ${i + 1}/${queriesToRun.length}] ${q.query.slice(0, 110)}`);
       const items = await runGoogleQuery(apifyClient, q, briefId);
-      logAndSave(briefId, `[L1.3 ${i + 1}/${queriesToRun.length}] +${items.length} items`);
+      logAndSave(briefId, `[Phase 2 ${i + 1}/${queriesToRun.length}] +${items.length} items`);
       allItems = allItems.concat(items);
       store.update(briefId, { counts: { ...((store.get(briefId) || {}).counts || {}), discovered: allItems.length } });
     }
     stopGoogle();
 
-    // ---- L2: adjacent-tech expansion (Niche or thin results) ----
+    // ---- PHASE 3a: adjacent-tech expansion (Niche or thin results) ----
+    // Ramesh's Phase 3 first leg: adjacent technologies whose practitioners
+    // could plausibly deliver the target.
     let normalised = dedupeItems(allItems.map(normaliseItem));
     if (!previewMode && (bp.searchMode === 'niche' || normalised.length < 10) && hasLlmClient()) {
-      const stop = stageStart('L2 Adjacent tech');
+      const stop = stageStart('Phase 3a: Adjacent tech');
       for (const kw of bp.keywords) {
         const adj = await claudeAdjacentTech(briefId, kw, bp);
-        logAndSave(briefId, `[L2] Adjacent tech for "${kw}": ${adj.join(', ') || '(none)'}`);
+        logAndSave(briefId, `[Phase 3a] Adjacent tech for "${kw}": ${adj.join(', ') || '(none)'}`);
         for (const a of adj) {
           // Run a single LinkedIn query per adjacent tech
           const q = { query: `independent instructor ${a} India site:linkedin.com/in`, keyword: a, source: 'linkedin', tier: 'L2' };
           const items = await runGoogleQuery(apifyClient, q, briefId);
-          logAndSave(briefId, `[L2] "${a}" → +${items.length} items`);
+          logAndSave(briefId, `[Phase 3a] "${a}" → +${items.length} items`);
           allItems = allItems.concat(items);
         }
       }
@@ -2275,19 +2346,37 @@ async function runPipeline(briefId, opts = {}) {
       stop();
     }
 
-    // ---- L3: Institutes (Niche + still thin) ----
+    // ---- PHASE 3b: Indian training institutes (Niche + still thin) ----
     if (!previewMode && bp.searchMode === 'niche' && normalised.length < 8 && hasLlmClient()) {
-      const stop = stageStart('L3 Institutes');
+      const stop = stageStart('Phase 3b: Institutes');
       for (const kw of bp.keywords) {
         const inst = await claudeInstitutes(briefId, kw, bp);
-        logAndSave(briefId, `[L3] Institutes for "${kw}" → ${inst.length}`);
+        logAndSave(briefId, `[Phase 3b] Institutes for "${kw}" → ${inst.length}`);
         allItems = allItems.concat(inst);
       }
       normalised = dedupeItems(allItems.map(normaliseItem));
       stop();
     }
 
-    logAndSave(briefId, `${normalised.length} unique items across all tiers`);
+    // ---- PHASE 3c: founders / principals at small Indian firms (v3.9.0) ----
+    // Ramesh's Phase 3 final leg from the call: "alternative people — founders,
+    // principals at small firms specialising in the tech." Fires for niche
+    // briefs OR when L1+L2+L3 produced thin results (<12 candidates total).
+    // High-signal because these people RUN the firm — they decide whether to
+    // accept training engagements, and their delivery depth matches Architect+
+    // tier without the "Architect = reject" issue Saranya flagged.
+    if (!previewMode && (bp.searchMode === 'niche' || normalised.length < 12) && hasLlmClient()) {
+      const stop = stageStart('Phase 3c: Founders');
+      for (const kw of bp.keywords) {
+        const founders = await claudeFoundersAtSmallFirms(briefId, kw, bp);
+        logAndSave(briefId, `[Phase 3c] Founders/principals for "${kw}" → ${founders.length}`);
+        allItems = allItems.concat(founders);
+      }
+      normalised = dedupeItems(allItems.map(normaliseItem));
+      stop();
+    }
+
+    logAndSave(briefId, `${normalised.length} unique items across all phases (1+2+3a/b/c)`);
 
     // ---- LinkedIn enrichment via harvestapi ----
     // Cap at 60: harvestapi charges ~$4/1k profiles ($0.24 per brief at the cap),
@@ -2507,6 +2596,32 @@ async function runPipeline(briefId, opts = {}) {
     }
     if (lowYield) logAndSave(briefId, `Low-yield run: ${lowYieldReason}`, 'warn');
 
+    // v3.9.0 — Iteration summary (Vijay's "send him iteration history & best
+    // matches" ask). Compute top-5 name diff vs the prior run on this brief
+    // so the detail view can render an iteration trail. _prevTopNames is the
+    // PRIOR run's top-5; we save the CURRENT top-5 there for the next rerun.
+    const refreshedBrief = store.get(briefId) || brief;
+    const currentTopNames = capped.slice(0, 5).map(c => {
+      try { return splitNameRoleCompany(c).name; } catch { return ''; }
+    }).filter(Boolean);
+    const prevTopNames = Array.isArray(refreshedBrief._prevTopNames) ? refreshedBrief._prevTopNames : [];
+    const prevSet = new Set(prevTopNames.map(n => n.toLowerCase()));
+    const currentSet = new Set(currentTopNames.map(n => n.toLowerCase()));
+    const newlyEntered = currentTopNames.filter(n => !prevSet.has(n.toLowerCase()));
+    const dropped = prevTopNames.filter(n => !currentSet.has(n.toLowerCase()));
+    const lastFeedback = (refreshedBrief.feedbackHistory || []).slice(-1)[0];
+    const summaryEntry = {
+      rev: refreshedBrief.feedbackRevisions || 0,
+      ts: new Date().toISOString(),
+      candidateCount: capped.length,
+      topNames: currentTopNames,
+      newlyEntered,
+      dropped,
+      feedbackApplied: lastFeedback ? String(lastFeedback.text || '').slice(0, 400) : null,
+      lowYield,
+    };
+    const iterationSummary = (refreshedBrief.iterationSummary || []).concat([summaryEntry]);
+
     store.update(briefId, {
       status: 'complete',
       outputFile: path.basename(file),
@@ -2519,6 +2634,8 @@ async function runPipeline(briefId, opts = {}) {
       lowYield,
       lowYieldReason,
       preflight: preflightResult,
+      iterationSummary,
+      _prevTopNames: currentTopNames,
     });
     logAndSave(briefId, `Pipeline complete — ${capped.length} candidates, ${(stat.size / 1024).toFixed(1)} KB, ${totalElapsed}s total${lowYield ? ' [LOW YIELD]' : ''}`);
   } catch (e) {

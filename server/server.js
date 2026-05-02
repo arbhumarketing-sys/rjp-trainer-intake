@@ -70,7 +70,7 @@ app.get('/healthz', (req, res) => {
   res.json({
     ok: true,
     ts: new Date().toISOString(),
-    version: '3.8.0',
+    version: '3.9.0',
     uptimeSec: Math.round((Date.now() - _bootedAt) / 1000),
     storage: process.env.DATABASE_URL ? 'postgres' : 'filesystem',
     dirty,
@@ -372,6 +372,59 @@ app.delete('/api/persistent-exclusions/:id', auth.requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+/* ---------- Candidate scoring (v3.9.0) ----------
+   GET    /api/briefs/:id/scores         — list scores for this brief
+   POST   /api/briefs/:id/scores         — { candidateUrl, candidateName, score: 'selected'|'hold'|'rejected', note?, scoredBy? }
+   DELETE /api/briefs/:id/scores         — body or query: { candidateUrl } removes a single score
+
+   Each score becomes a learning signal for future reranks of similar briefs.
+   Verdict taxonomy matches Saranya's client-side grading (v3.8.0) so scores
+   compose with seed-client-gradings.json in a future rerank-priors ship. */
+app.get('/api/briefs/:id/scores', auth.requireAuth, async (req, res) => {
+  const b = store.get(req.params.id);
+  if (!b) return res.status(404).json({ error: 'not found' });
+  try {
+    const scores = await store.getCandidateScores(req.params.id);
+    res.json({ scores });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/briefs/:id/scores', auth.requireAuth, async (req, res) => {
+  const b = store.get(req.params.id);
+  if (!b) return res.status(404).json({ error: 'not found' });
+  const body = req.body || {};
+  const candidateUrl  = String(body.candidateUrl  || '').slice(0, 500);
+  const candidateName = String(body.candidateName || '').slice(0, 200);
+  const score         = String(body.score         || '').toLowerCase();
+  const note          = String(body.note          || '').slice(0, 1000);
+  const scoredBy      = String(body.scoredBy      || (req.user && req.user.team) || 'rjp-infotek').slice(0, 100);
+  if (!candidateUrl) return res.status(400).json({ error: 'candidateUrl required' });
+  if (!['selected', 'hold', 'rejected'].includes(score)) {
+    return res.status(400).json({ error: 'score must be one of: selected, hold, rejected' });
+  }
+  try {
+    const saved = await store.saveCandidateScore(b.id, candidateUrl, candidateName, score, note, scoredBy);
+    res.json({ score: saved });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/briefs/:id/scores', auth.requireAuth, async (req, res) => {
+  const b = store.get(req.params.id);
+  if (!b) return res.status(404).json({ error: 'not found' });
+  const url = String((req.body && req.body.candidateUrl) || req.query.candidateUrl || '');
+  if (!url) return res.status(400).json({ error: 'candidateUrl required (in body or query)' });
+  try {
+    const removed = await store.removeCandidateScore(b.id, url);
+    res.json({ ok: true, removed });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 /* Static frontend */
 const FRONTEND_DIR = path.resolve(__dirname, '..', 'frontend');
 if (fs.existsSync(path.join(FRONTEND_DIR, 'index.html'))) {
@@ -403,7 +456,7 @@ app.use((err, req, res, next) => {
   reapOrphansOnBoot();
 
   app.listen(PORT, () => {
-    console.log(`RJP Sourcing Portal v3.8.0 listening on :${PORT}`);
+    console.log(`RJP Sourcing Portal v3.9.0 listening on :${PORT}`);
     console.log(`  Apify Google actor:   ${process.env.APIFY_GOOGLE_ACTOR || process.env.APIFY_ACTOR || 'apify~rag-web-browser'}`);
     console.log(`  Apify LinkedIn actor: ${process.env.APIFY_LINKEDIN_ACTOR || 'harvestapi/linkedin-profile-scraper'}`);
     console.log(`  LLM client:           ${process.env.ANTHROPIC_VIA_CLAUDE_CLI === 'true' ? 'claude CLI subprocess (Max plan)' : (process.env.ANTHROPIC_API_KEY ? 'API key' : 'DISABLED')}`);

@@ -80,6 +80,19 @@ async function initPostgres() {
       size_bytes INTEGER,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS candidate_scores (
+      id SERIAL PRIMARY KEY,
+      brief_id TEXT NOT NULL,
+      candidate_url TEXT NOT NULL,
+      candidate_name TEXT,
+      score TEXT NOT NULL,
+      note TEXT,
+      scored_by TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(brief_id, candidate_url)
+    );
+    CREATE INDEX IF NOT EXISTS candidate_scores_brief_idx ON candidate_scores(brief_id);
+    CREATE INDEX IF NOT EXISTS candidate_scores_score_idx ON candidate_scores(score);
   `);
   // Hydrate caches.
   const r1 = await pool.query('SELECT id, data FROM briefs');
@@ -246,6 +259,68 @@ async function getOutput(briefId) {
   }
 }
 
+/* ---------- Candidate scoring (v3.9.0) ----------
+   Each row in candidate_scores represents an operator's verdict on a single
+   candidate from a brief's output. Verdicts use the same taxonomy as Saranya's
+   client-side grading (selected / hold / rejected) so accumulated scores can
+   be folded into the same seed-client-gradings.json learning loop in a future
+   ship. Per-(brief, candidate_url) unique — re-scoring the same candidate
+   updates rather than appends. */
+const VALID_SCORE_VERDICTS = ['selected', 'hold', 'rejected'];
+
+async function saveCandidateScore(briefId, candidateUrl, candidateName, score, note, scoredBy) {
+  if (!pool) return null;
+  const verdict = String(score || '').toLowerCase();
+  if (!VALID_SCORE_VERDICTS.includes(verdict)) {
+    throw new Error(`Invalid score verdict "${score}" — must be one of: ${VALID_SCORE_VERDICTS.join(', ')}`);
+  }
+  const url = String(candidateUrl || '').slice(0, 500);
+  if (!url) throw new Error('candidateUrl is required');
+  await pool.query(
+    `INSERT INTO candidate_scores (brief_id, candidate_url, candidate_name, score, note, scored_by)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT (brief_id, candidate_url)
+     DO UPDATE SET score = EXCLUDED.score, note = EXCLUDED.note, scored_by = EXCLUDED.scored_by, created_at = NOW()`,
+    [briefId, url, String(candidateName || '').slice(0, 200), verdict, String(note || '').slice(0, 1000), String(scoredBy || '').slice(0, 100)]
+  );
+  return { briefId, candidateUrl: url, candidateName, score: verdict, note, scoredBy, ts: new Date().toISOString() };
+}
+
+async function getCandidateScores(briefId) {
+  if (!pool) return [];
+  try {
+    const r = await pool.query(
+      'SELECT candidate_url, candidate_name, score, note, scored_by, created_at FROM candidate_scores WHERE brief_id = $1 ORDER BY created_at',
+      [briefId]
+    );
+    return r.rows.map(row => ({
+      candidateUrl: row.candidate_url,
+      candidateName: row.candidate_name,
+      score: row.score,
+      note: row.note,
+      scoredBy: row.scored_by,
+      createdAt: row.created_at,
+    }));
+  } catch (e) {
+    console.warn('[store] getCandidateScores failed:', e.message);
+    return [];
+  }
+}
+
+async function removeCandidateScore(briefId, candidateUrl) {
+  if (!pool) return false;
+  try {
+    const r = await pool.query(
+      'DELETE FROM candidate_scores WHERE brief_id = $1 AND candidate_url = $2',
+      [briefId, candidateUrl]
+    );
+    return r.rowCount > 0;
+  } catch (e) {
+    console.warn('[store] removeCandidateScore failed:', e.message);
+    return false;
+  }
+}
+
 /* ---------- Persistent exclusions (v3.2) ---------- */
 // Always-exclude terms that survive across all briefs. RJP adds InfraCloud,
 // AnalyticsVidhya, etc. once instead of typing them into customExclusions
@@ -339,6 +414,8 @@ module.exports = {
   saveFeatureRequest, listFeatureRequests, getFeatureRequest, updateFeatureRequest,
   // persistent exclusions (v3.2)
   addPersistentExclusion, getPersistentExclusions, removePersistentExclusion,
+  // candidate scoring (v3.9.0)
+  saveCandidateScore, getCandidateScores, removeCandidateScore,
   // seed
   loadSeedIfFresh,
 };
