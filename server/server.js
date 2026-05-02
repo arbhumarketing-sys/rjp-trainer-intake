@@ -70,7 +70,7 @@ app.get('/healthz', (req, res) => {
   res.json({
     ok: true,
     ts: new Date().toISOString(),
-    version: '3.9.0',
+    version: '3.10.0',
     uptimeSec: Math.round((Date.now() - _bootedAt) / 1000),
     storage: process.env.DATABASE_URL ? 'postgres' : 'filesystem',
     dirty,
@@ -235,6 +235,94 @@ app.post('/api/briefs/clarify', auth.requireAuth, async (req, res) => {
   }
 });
 
+/* v3.10.0: AskUserQuestion follow-up. Given a (possibly partial) brief draft,
+   Haiku generates up to 15 multi-choice clarifying questions covering only the
+   fields that are MISSING or AMBIGUOUS. Answers come back from the chat-style
+   input UI as a clarifying-answers block appended to the draft's steering
+   field — no schema changes required, the existing pipeline reads steering in
+   every L1/L2/L3 prompt + the classifier + Sonnet rerank, so answers
+   automatically inform the search. */
+app.post('/api/briefs/ask-questions', auth.requireAuth, async (req, res) => {
+  const draft = req.body || {};
+  const client = makeLlmClient();
+  if (!client) {
+    return res.status(503).json({ error: 'Requires ANTHROPIC_VIA_CLAUDE_CLI=true or ANTHROPIC_API_KEY' });
+  }
+  const sys = `You are a sourcing assistant for an Indian B2B trainer-placement firm. Given a partial brief draft, generate up to 15 clarifying MULTI-CHOICE questions to refine the search. Focus on fields that are MISSING or AMBIGUOUS in the draft. Skip fields the operator already specified clearly.
+
+Output ONLY a JSON array of question objects. Each: {"id":"kebab-case-id","question":"human-readable question","choices":[{"id":"kebab-id","label":"human label"}],"multiSelect":boolean}. Each question MUST have between 2 and 5 choices.
+
+Question coverage to consider (skip if already specified, ask only if missing/ambiguous):
+1. Trainer (delivery) vs Consultant (advisory) vs Both
+2. Years of experience required (5+, 8+, 12+, any)
+3. Specific certifications relevant to the domain
+4. Specific Indian cities or anywhere in India
+5. Lab setup capability needed (yes/no/preferred)
+6. Multi-corporate-client experience required
+7. Online/remote vs in-person / hybrid
+8. Number of trainers needed
+9. Per-day rate band (₹15-25k / ₹25-40k / ₹40-60k / ₹60k+ / negotiable)
+10. Lead time / availability (this week / 2 weeks / 1 month / flexible)
+11. Industry vertical preference (BFSI / IT services / pharma / manufacturing / any)
+12. Languages preferred (English / Hindi / regional)
+13. Big-firm exclusion: any extras beyond default Tech-M/Wipro/Cognizant/HCL/Infy/TCS/Accenture/Capgemini
+14. Past customer companies to exclude (one-of-many existing clients)
+15. Content customization needed (off-the-shelf / lightly tailored / fully custom)
+
+Use multiSelect:true for questions where multiple answers make sense (cities, certifications, exclusions); false otherwise. Use natural human-friendly choice labels. NEVER ask about something the draft already specifies — the goal is to fill GAPS, not re-ask known answers.`;
+
+  // Normalise the draft so parse-output and chat-input both work
+  const normalized = {
+    title:    String(draft.title || '').slice(0, 200),
+    domain:   String(draft.domain || '').slice(0, 100),
+    keywords: Array.isArray(draft.keywords) ? draft.keywords : (draft.keywords ? [draft.keywords] : []),
+    must:     Array.isArray(draft.must) ? draft.must : (draft.must ? [draft.must] : []),
+    should:   Array.isArray(draft.should) ? draft.should : (draft.should ? [draft.should] : []),
+    mustNot:  Array.isArray(draft.mustNot) ? draft.mustNot : (draft.mustNot ? [draft.mustNot] : []),
+    geo:      String(draft.geo || ''),
+    searchMode: draft.searchMode === 'niche' ? 'niche' : 'std',
+    deadline: String(draft.deadline || ''),
+    customExclusions: Array.isArray(draft.customExclusions) ? draft.customExclusions : [],
+    steering: String(draft.steering || '').slice(0, 1000),
+    raw:      String(draft.raw || '').slice(0, 1500),
+  };
+
+  const user = `Brief draft:\n${JSON.stringify(normalized, null, 2)}\n\nGenerate up to 15 clarifying multi-choice questions covering ONLY missing/ambiguous fields. JSON array only — no prose.`;
+
+  try {
+    const resp = await client.messages.create({
+      model: process.env.CLAUDE_MODEL_FAST || 'claude-haiku-4-5-20251001',
+      max_tokens: 2400,
+      system: sys,
+      messages: [{ role: 'user', content: user }],
+    });
+    const text = (resp.content[0] && resp.content[0].text) || '';
+    let questions = [];
+    try {
+      const m = text.match(/\[[\s\S]*\]/);
+      if (m) questions = JSON.parse(m[0]);
+    } catch (_) {}
+    if (!Array.isArray(questions)) questions = [];
+    questions = questions
+      .filter(q => q && typeof q === 'object' && q.question && Array.isArray(q.choices) && q.choices.length >= 2 && q.choices.length <= 6)
+      .slice(0, 15)
+      .map((q, i) => ({
+        id: String(q.id || ('q-' + i)).slice(0, 60),
+        question: String(q.question).slice(0, 220),
+        multiSelect: !!q.multiSelect,
+        choices: q.choices.slice(0, 6).map((c, j) => ({
+          id: String(c.id || ('c-' + j)).slice(0, 60),
+          label: String(c.label || c.id || '').slice(0, 100),
+        })).filter(c => c.label),
+      }))
+      .filter(q => q.choices.length >= 2);
+    res.json({ questions });
+  } catch (e) {
+    console.error('[ask-questions] error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 /* Free-text intake parser — Claude turns one-liner into structured brief */
 app.post('/api/briefs/parse', auth.requireAuth, async (req, res) => {
   const text = String((req.body && req.body.text) || '').slice(0, 2000).trim();
@@ -372,7 +460,7 @@ app.delete('/api/persistent-exclusions/:id', auth.requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-/* ---------- Candidate scoring (v3.9.0) ----------
+/* ---------- Candidate scoring (v3.10.0) ----------
    GET    /api/briefs/:id/scores         — list scores for this brief
    POST   /api/briefs/:id/scores         — { candidateUrl, candidateName, score: 'selected'|'hold'|'rejected', note?, scoredBy? }
    DELETE /api/briefs/:id/scores         — body or query: { candidateUrl } removes a single score
@@ -456,7 +544,7 @@ app.use((err, req, res, next) => {
   reapOrphansOnBoot();
 
   app.listen(PORT, () => {
-    console.log(`RJP Sourcing Portal v3.9.0 listening on :${PORT}`);
+    console.log(`RJP Sourcing Portal v3.10.0 listening on :${PORT}`);
     console.log(`  Apify Google actor:   ${process.env.APIFY_GOOGLE_ACTOR || process.env.APIFY_ACTOR || 'apify~rag-web-browser'}`);
     console.log(`  Apify LinkedIn actor: ${process.env.APIFY_LINKEDIN_ACTOR || 'harvestapi/linkedin-profile-scraper'}`);
     console.log(`  LLM client:           ${process.env.ANTHROPIC_VIA_CLAUDE_CLI === 'true' ? 'claude CLI subprocess (Max plan)' : (process.env.ANTHROPIC_API_KEY ? 'API key' : 'DISABLED')}`);

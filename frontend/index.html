@@ -654,6 +654,35 @@
   .iter-new { color: var(--good); }
   .iter-dropped { color: var(--bad); }
 
+  /* v3.10.0 — Chat-style input view */
+  .chat-stepper { display: flex; align-items: center; gap: 0; padding: 12px 0 20px; margin-bottom: 4px; border-bottom: 1px solid var(--line-soft); }
+  .parsed-card { padding: 16px 18px; border: 1px solid var(--accent); border-left-width: 4px; border-radius: var(--radius); background: var(--panel); margin-bottom: 16px; }
+  .pf-grid { display: grid; grid-template-columns: 140px 1fr; gap: 10px 14px; align-items: start; }
+  .pf-grid > div:nth-child(odd).pf-label {
+    color: var(--ink-3); font-size: 11.5px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.04em;
+    padding-top: 6px;
+  }
+  .pf-grid input, .pf-grid textarea { width: 100%; padding: 6px 10px; border: 1px solid var(--line); border-radius: 4px; font-size: 13px; outline: none; }
+  .pf-grid input:focus, .pf-grid textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .pf-grid textarea { resize: vertical; min-height: 60px; line-height: 1.5; }
+
+  .q-card { padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 12px; background: var(--panel); }
+  .q-card:hover { border-color: var(--ink-3); }
+  .q-text { font-weight: 500; font-size: 14px; margin-bottom: 10px; color: var(--ink); }
+  .q-multi-hint { color: var(--ink-3); font-size: 11.5px; margin-left: 8px; font-weight: 400; font-style: italic; }
+  .q-choices { display: flex; flex-wrap: wrap; gap: 6px; }
+  .q-choice {
+    padding: 7px 14px; border-radius: 18px;
+    border: 1px solid var(--line); background: var(--panel);
+    cursor: pointer; font-size: 12.5px;
+    transition: all 0.08s; user-select: none;
+  }
+  .q-choice:hover { border-color: var(--ink-3); }
+  .q-choice.on { background: var(--accent); color: white; border-color: var(--accent); font-weight: 500; }
+  .chat-link-advanced { display: block; text-align: right; margin-top: 14px; font-size: 12.5px; color: var(--ink-3); text-decoration: none; }
+  .chat-link-advanced:hover { color: var(--accent); text-decoration: underline; }
+
   /* v3.9.0 — Verdict scoring buttons (Selected / Hold / Rejected per Saranya's grading taxonomy) */
   .verdict-cell { white-space: nowrap; min-width: 240px; }
   .verdict-btn {
@@ -728,6 +757,15 @@ let state = {
   // v3.9.0 — candidate scoring cache. { briefId: { candidateUrl: 'selected'|'hold'|'rejected' } }
   candidateScores: {},
   scoresLoadedFor: null,     // briefId for which scores were last fetched (avoid re-fetching during polls)
+  // v3.10.0 — chat-style input flow (replaces wizard as default for "+ New brief")
+  chatStep: 1,               // 1=describe, 2=review parse, 3=clarifying questions, 4=submit
+  chatInput: '',
+  chatLoading: false,
+  chatParsed: null,          // { title, domain, keywords[], must[], should[], mustNot[], searchMode, customExclusions[], ... }
+  chatQuestions: [],         // [{ id, question, choices, multiSelect }]
+  chatAnswers: {},           // { questionId: choiceId | [choiceId, ...] }
+  chatOpName: '',
+  chatOpEmail: '',
 };
 function defaultDraft() {
   return {
@@ -936,7 +974,12 @@ function renderShell() {
 function wireShell() {
   document.getElementById('btn-home').addEventListener('click', () => { state.view = 'home'; state.activeBriefId = null; stopPolling(); renderMain(); renderSidebar(); });
   document.getElementById('btn-admin').addEventListener('click', async () => { state.view = 'admin'; state.activeBriefId = null; stopPolling(); await Promise.all([loadFeatureRequests(), loadPersistentExclusions()]); renderMain(); renderSidebar(); });
-  document.getElementById('btn-new').addEventListener('click', () => { state.view = 'new'; state.step = 1; state.draft = defaultDraft(); renderMain(); renderSidebar(); });
+  document.getElementById('btn-new').addEventListener('click', () => {
+    // v3.10.0 — default "+ New brief" goes to the chat-style input (Perplexity-flow).
+    // The advanced wizard is still reachable via a link on chat step 1.
+    state.view = 'chat'; chatReset();
+    renderMain(); renderSidebar();
+  });
   document.getElementById('btn-warm').addEventListener('click', async () => {
     const btn = document.getElementById('btn-warm');
     btn.disabled = true;
@@ -1125,10 +1168,369 @@ function renderSidebar() {
 function renderMain() {
   const m = document.getElementById('main');
   if (!m) return;
+  if (state.view === 'chat') return renderChat(m);
   if (state.view === 'new') return renderWizard(m);
   if (state.view === 'admin') return renderAdmin(m);
   if (state.view === 'detail' && state.activeBriefId) return renderDetail(m);
   return renderHome(m);
+}
+
+/* ============================================================ */
+/* v3.10.0 — Chat-style input (replaces wizard as default)      */
+/* ============================================================ */
+function chatReset() {
+  state.chatStep = 1;
+  state.chatInput = '';
+  state.chatLoading = false;
+  state.chatParsed = null;
+  state.chatQuestions = [];
+  state.chatAnswers = {};
+}
+
+function chatHeadline(step) {
+  return ([
+    'What kind of trainer are you looking for?',
+    'Here\'s what I understood',
+    'A few quick questions to refine the search',
+    'Ready to submit',
+  ])[step - 1] || '';
+}
+function chatSub(step) {
+  return ([
+    'Describe in plain English. Claude parses it and generates clarifying follow-ups (Perplexity-style).',
+    'Edit any field if it\'s wrong. Then continue to follow-up questions.',
+    'Click answers — they refine the search. All optional. Skip what doesn\'t apply.',
+    'Final review. Steering field shows the assembled CLARIFYING ANSWERS block that\'ll inform Sonnet rerank.',
+  ])[step - 1] || '';
+}
+
+function renderChat(m) {
+  const labels = ['Describe', 'Review', 'Refine', 'Submit'];
+  const stepEls = labels.map((lbl, i) => {
+    const n = i + 1;
+    const cls = n === state.chatStep ? 'active' : (n < state.chatStep ? 'done' : '');
+    return `
+      <div class="stepper-item ${cls}">
+        <div class="stepper-num">${cls === 'done' ? '✓' : n}</div>
+        <div class="stepper-label">${lbl}</div>
+      </div>
+      ${n < labels.length ? '<div class="stepper-bar"></div>' : ''}
+    `;
+  }).join('');
+
+  m.innerHTML = `
+    <div class="center">
+      <div class="page-head">
+        <h1>${esc(chatHeadline(state.chatStep))}</h1>
+        <div class="sub">${esc(chatSub(state.chatStep))}</div>
+      </div>
+      <div class="chat-stepper">${stepEls}</div>
+      <div id="chat-body"></div>
+      <a href="#" class="chat-link-advanced" id="chat-link-wizard">Use the advanced wizard form instead →</a>
+    </div>
+  `;
+  document.getElementById('chat-link-wizard').addEventListener('click', e => {
+    e.preventDefault();
+    state.view = 'new'; state.step = 1; state.draft = defaultDraft();
+    renderMain();
+  });
+  if (state.chatStep === 1) renderChatStep1();
+  else if (state.chatStep === 2) renderChatStep2();
+  else if (state.chatStep === 3) renderChatStep3();
+  else if (state.chatStep === 4) renderChatStep4();
+}
+
+function renderChatStep1() {
+  const body = document.getElementById('chat-body');
+  body.innerHTML = `
+    <div class="panel">
+      <div class="field">
+        <label class="lbl">Describe the brief</label>
+        <textarea id="chat-input" rows="6" placeholder="Examples:
+• 5 Splunk Cloud Observability trainers, India, exclude TCS, niche, freelance only
+• Need an SAP S/4HANA FICO consultant in Bengaluru with 12+ years and lab setup
+• Aurora PostgreSQL DBA — 3 trainers, by Friday, exclude HCL/Wipro">${esc(state.chatInput)}</textarea>
+        <div class="hint">Claude (Haiku) parses this into structured fields. You'll see the parse on the next step and can edit anything.</div>
+      </div>
+      <div class="panel-actions">
+        <span style="color:var(--ink-3);font-size:12px;">${state.chatLoading ? 'Parsing…' : ''}</span>
+        <button class="btn primary" id="btn-chat-send" ${state.chatLoading ? 'disabled' : ''}>${state.chatLoading ? 'Parsing…' : 'Send →'}</button>
+      </div>
+    </div>
+  `;
+  const ta = document.getElementById('chat-input');
+  ta.addEventListener('input', e => state.chatInput = e.target.value);
+  ta.focus();
+  document.getElementById('btn-chat-send').addEventListener('click', chatHandleSend);
+}
+
+async function chatHandleSend() {
+  const text = (document.getElementById('chat-input').value || '').trim();
+  if (!text || text.length < 10) { toast('Please describe in at least 10 characters.', 'error'); return; }
+  state.chatInput = text;
+  state.chatLoading = true;
+  renderChatStep1();
+  try {
+    const r = await api('POST', '/api/briefs/parse', { text });
+    state.chatParsed = r.parsed || {};
+    // Default mode if not set
+    if (!state.chatParsed.searchMode) state.chatParsed.searchMode = 'std';
+    state.chatLoading = false;
+    state.chatStep = 2;
+    renderChat(document.getElementById('main'));
+  } catch (e) {
+    state.chatLoading = false;
+    toast('Parse failed: ' + e.message, 'error');
+    renderChatStep1();
+  }
+}
+
+function chatArrToLines(arr) {
+  if (!arr) return '';
+  if (Array.isArray(arr)) return arr.join('\n');
+  return String(arr);
+}
+function chatLinesToArr(s) {
+  return String(s || '').split('\n').map(x => x.trim()).filter(Boolean);
+}
+
+function renderChatStep2() {
+  const p = state.chatParsed || {};
+  // Suggest a domain if missing — derive from first keyword
+  const suggestedDomain = p.domain || (Array.isArray(p.keywords) && p.keywords[0]) || '';
+  document.getElementById('chat-body').innerHTML = `
+    <div class="panel">
+      <div class="parsed-card">
+        <div class="pf-grid">
+          <div class="pf-label">Title</div>          <div><input id="cp-title" value="${esc(p.title || '')}" placeholder="e.g. Splunk Observability Trainer + Lab Setup" /></div>
+          <div class="pf-label">Domain</div>         <div><input id="cp-domain" value="${esc(suggestedDomain)}" placeholder="e.g. Splunk, Salesforce, AWS" /></div>
+          <div class="pf-label">Keywords</div>       <div><textarea id="cp-keywords" rows="3" placeholder="One per line, e.g.&#10;Splunk Observability Trainer&#10;Splunk Cloud Consultant">${esc(chatArrToLines(p.keywords))}</textarea></div>
+          <div class="pf-label">Must include</div>   <div><textarea id="cp-must" rows="2" placeholder="e.g. certified, freelance">${esc(chatArrToLines(p.must))}</textarea></div>
+          <div class="pf-label">Should include</div> <div><textarea id="cp-should" rows="2" placeholder="e.g. ITSI, MLTK, dashboards">${esc(chatArrToLines(p.should))}</textarea></div>
+          <div class="pf-label">Must NOT</div>       <div><textarea id="cp-mustnot" rows="2" placeholder="e.g. intern, junior">${esc(chatArrToLines(p.mustNot))}</textarea></div>
+          <div class="pf-label">Mode</div>           <div>
+            <div class="mode-toggle" id="cp-mode">
+              <button type="button" data-m="std"   class="${(p.searchMode || 'std') === 'std' ? 'on' : ''}">Standard</button>
+              <button type="button" data-m="niche" class="${p.searchMode === 'niche' ? 'on' : ''}">Niche</button>
+            </div>
+          </div>
+          <div class="pf-label">Custom exclusions</div><div><textarea id="cp-customex" rows="2" placeholder="One per line. Big-firm list (TCS/Wipro/etc.) is auto-applied.">${esc(chatArrToLines(p.customExclusions))}</textarea></div>
+        </div>
+      </div>
+      <div class="panel-actions">
+        <button class="btn" id="btn-chat-back">← Back</button>
+        <button class="btn primary" id="btn-chat-questions" ${state.chatLoading ? 'disabled' : ''}>${state.chatLoading ? 'Generating questions…' : 'Continue to follow-ups →'}</button>
+      </div>
+    </div>
+  `;
+  document.querySelectorAll('#cp-mode button').forEach(b => b.addEventListener('click', () => {
+    state.chatParsed.searchMode = b.dataset.m;
+    document.querySelectorAll('#cp-mode button').forEach(x => x.classList.toggle('on', x.dataset.m === state.chatParsed.searchMode));
+  }));
+  document.getElementById('btn-chat-back').addEventListener('click', () => {
+    state.chatStep = 1; renderChat(document.getElementById('main'));
+  });
+  document.getElementById('btn-chat-questions').addEventListener('click', chatHandleAskQuestions);
+}
+
+function chatCollectStep2() {
+  state.chatParsed = state.chatParsed || {};
+  state.chatParsed.title    = (document.getElementById('cp-title').value || '').trim();
+  state.chatParsed.domain   = (document.getElementById('cp-domain').value || '').trim();
+  state.chatParsed.keywords = chatLinesToArr(document.getElementById('cp-keywords').value);
+  state.chatParsed.must     = chatLinesToArr(document.getElementById('cp-must').value);
+  state.chatParsed.should   = chatLinesToArr(document.getElementById('cp-should').value);
+  state.chatParsed.mustNot  = chatLinesToArr(document.getElementById('cp-mustnot').value);
+  state.chatParsed.customExclusions = chatLinesToArr(document.getElementById('cp-customex').value);
+}
+
+async function chatHandleAskQuestions() {
+  chatCollectStep2();
+  state.chatLoading = true;
+  renderChatStep2();
+  try {
+    const r = await api('POST', '/api/briefs/ask-questions', {
+      ...state.chatParsed,
+      raw: state.chatInput,
+    });
+    state.chatQuestions = r.questions || [];
+    state.chatAnswers = {};
+    state.chatLoading = false;
+    state.chatStep = 3;
+    renderChat(document.getElementById('main'));
+  } catch (e) {
+    state.chatLoading = false;
+    toast('Question generation failed: ' + e.message + '. Skipping to submit.', 'error');
+    state.chatQuestions = [];
+    state.chatStep = 4;
+    renderChat(document.getElementById('main'));
+  }
+}
+
+function renderChatStep3() {
+  const qs = state.chatQuestions || [];
+  if (!qs.length) {
+    document.getElementById('chat-body').innerHTML = `
+      <div class="panel">
+        <div class="hint">No clarifying questions generated — Claude thinks the draft is complete enough. Continuing to submit.</div>
+        <div class="panel-actions">
+          <button class="btn" id="btn-chat-back">← Back</button>
+          <button class="btn primary" id="btn-chat-skip-q">Continue to submit →</button>
+        </div>
+      </div>
+    `;
+    document.getElementById('btn-chat-back').addEventListener('click', () => { state.chatStep = 2; renderChat(document.getElementById('main')); });
+    document.getElementById('btn-chat-skip-q').addEventListener('click', () => { state.chatStep = 4; renderChat(document.getElementById('main')); });
+    return;
+  }
+  const cards = qs.map(q => {
+    const ans = state.chatAnswers[q.id];
+    const choices = q.choices.map(c => {
+      const isOn = q.multiSelect
+        ? (Array.isArray(ans) && ans.includes(c.id))
+        : (ans === c.id);
+      return `<button type="button" class="q-choice ${isOn ? 'on' : ''}" data-q="${esc(q.id)}" data-c="${esc(c.id)}">${esc(c.label)}</button>`;
+    }).join('');
+    return `
+      <div class="q-card" data-qid="${esc(q.id)}">
+        <div class="q-text">${esc(q.question)}${q.multiSelect ? '<span class="q-multi-hint">(pick all that apply)</span>' : ''}</div>
+        <div class="q-choices">${choices}</div>
+      </div>
+    `;
+  }).join('');
+  const answeredCount = Object.keys(state.chatAnswers).length;
+  document.getElementById('chat-body').innerHTML = `
+    <div class="panel">
+      <div class="panel-sub">${qs.length} question${qs.length === 1 ? '' : 's'} · ${answeredCount} answered. All optional — answers refine the search via steering.</div>
+      ${cards}
+      <div class="panel-actions" style="margin-top:14px;">
+        <button class="btn" id="btn-chat-back">← Back</button>
+        <button class="btn primary" id="btn-chat-to-submit">Continue to submit →</button>
+      </div>
+    </div>
+  `;
+  document.querySelectorAll('.q-choice').forEach(b => b.addEventListener('click', () => {
+    const qid = b.dataset.q;
+    const cid = b.dataset.c;
+    const q = state.chatQuestions.find(x => x.id === qid);
+    if (!q) return;
+    if (q.multiSelect) {
+      const cur = Array.isArray(state.chatAnswers[qid]) ? state.chatAnswers[qid].slice() : [];
+      const i = cur.indexOf(cid);
+      if (i >= 0) cur.splice(i, 1); else cur.push(cid);
+      if (cur.length) state.chatAnswers[qid] = cur; else delete state.chatAnswers[qid];
+    } else {
+      if (state.chatAnswers[qid] === cid) delete state.chatAnswers[qid];
+      else state.chatAnswers[qid] = cid;
+    }
+    renderChatStep3();
+  }));
+  document.getElementById('btn-chat-back').addEventListener('click', () => { state.chatStep = 2; renderChat(document.getElementById('main')); });
+  document.getElementById('btn-chat-to-submit').addEventListener('click', () => { state.chatStep = 4; renderChat(document.getElementById('main')); });
+}
+
+function chatBuildClarifyingBlock() {
+  const lines = [];
+  for (const q of (state.chatQuestions || [])) {
+    const ans = state.chatAnswers[q.id];
+    if (!ans) continue;
+    const labels = (Array.isArray(ans) ? ans : [ans])
+      .map(a => (q.choices.find(c => c.id === a) || {}).label)
+      .filter(Boolean);
+    if (!labels.length) continue;
+    lines.push(`- ${q.question} ${labels.join(', ')}`);
+  }
+  return lines.length ? 'CLARIFYING ANSWERS (operator chose these in chat-flow):\n' + lines.join('\n') : '';
+}
+
+function renderChatStep4() {
+  const p = state.chatParsed || {};
+  const clarifyBlock = chatBuildClarifyingBlock();
+  const finalSteering = [(p.steering || '').trim(), clarifyBlock].filter(Boolean).join('\n\n').trim();
+
+  document.getElementById('chat-body').innerHTML = `
+    <div class="panel">
+      <div class="parsed-card">
+        <div class="pf-grid">
+          <div class="pf-label">Title</div>          <div>${esc(p.title || '(none)')}</div>
+          <div class="pf-label">Domain</div>         <div>${esc(p.domain || '(none)')}</div>
+          <div class="pf-label">Keywords</div>       <div>${(p.keywords || []).map(esc).join('<br>') || '<span style="color:var(--ink-4);">(none)</span>'}</div>
+          <div class="pf-label">Must include</div>   <div>${(p.must || []).map(esc).join('<br>') || '—'}</div>
+          <div class="pf-label">Should include</div> <div>${(p.should || []).map(esc).join('<br>') || '—'}</div>
+          <div class="pf-label">Must NOT</div>       <div>${(p.mustNot || []).map(esc).join('<br>') || '—'}</div>
+          <div class="pf-label">Mode</div>           <div>${p.searchMode === 'niche' ? 'Niche' : 'Standard'}</div>
+          <div class="pf-label">Custom exclusions</div><div>${(p.customExclusions || []).map(esc).join('<br>') || '—'}</div>
+          <div class="pf-label">Steering</div>       <div style="white-space:pre-wrap;font-family:'Menlo',monospace;font-size:12px;background:var(--bg);padding:8px 10px;border-radius:4px;">${esc(finalSteering) || '<span style=\"color:var(--ink-4);font-family:inherit;\">(none)</span>'}</div>
+        </div>
+      </div>
+
+      <div class="field" style="margin-top:14px;">
+        <label class="lbl">Operator name <span style="color:var(--ink-3);font-weight:400;font-size:11.5px;">— for the audit trail</span></label>
+        <input id="chat-op-name" placeholder="e.g. your name" value="${esc(state.chatOpName || '')}" />
+      </div>
+      <div class="field">
+        <label class="lbl">Operator email</label>
+        <input id="chat-op-email" type="email" placeholder="you@rjpinfotek.com" value="${esc(state.chatOpEmail || '')}" />
+      </div>
+
+      <div class="panel-actions">
+        <button class="btn" id="btn-chat-back">← Back to questions</button>
+        <button class="btn primary" id="btn-chat-submit" ${state.chatLoading ? 'disabled' : ''}>${state.chatLoading ? 'Submitting…' : '✓ Submit & start sourcing'}</button>
+      </div>
+    </div>
+  `;
+  document.getElementById('chat-op-name').addEventListener('input', e => state.chatOpName = e.target.value);
+  document.getElementById('chat-op-email').addEventListener('input', e => state.chatOpEmail = e.target.value);
+  document.getElementById('btn-chat-back').addEventListener('click', () => {
+    state.chatStep = state.chatQuestions.length ? 3 : 2;
+    renderChat(document.getElementById('main'));
+  });
+  document.getElementById('btn-chat-submit').addEventListener('click', chatHandleSubmit);
+}
+
+async function chatHandleSubmit() {
+  const name = (state.chatOpName || '').trim();
+  const email = (state.chatOpEmail || '').trim();
+  if (!name) { toast('Please enter operator name.', 'error'); return; }
+  if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { toast('Please enter a valid email.', 'error'); return; }
+
+  const p = state.chatParsed || {};
+  const clarifyBlock = chatBuildClarifyingBlock();
+  const finalSteering = [(p.steering || '').trim(), clarifyBlock].filter(Boolean).join('\n\n').trim();
+
+  state.chatLoading = true;
+  renderChatStep4();
+  try {
+    const payload = {
+      title: p.title || (Array.isArray(p.keywords) && p.keywords[0]) || 'Chat-flow brief',
+      domain: p.domain || '',
+      geo: 'India',
+      keywords: p.keywords || [],
+      must: p.must || [],
+      should: p.should || [],
+      mustNot: p.mustNot || [],
+      customExclusions: p.customExclusions || [],
+      searchMode: p.searchMode === 'niche' ? 'niche' : 'std',
+      steering: finalSteering,
+      operator: { name, email },
+      // Chat flow already engaged the operator with question-driven refinement
+      // — pipeline can skip its own auto-cleaner (no double-Haiku).
+      confirmedClean: true,
+    };
+    const r = await api('POST', '/api/briefs', payload);
+    await loadBriefs();
+    state.activeBriefId = r.brief.id;
+    state.view = 'detail';
+    chatReset();
+    state.chatLoading = false;
+    startPolling();
+    renderMain(); renderSidebar();
+    toast('Brief submitted via chat — full pipeline running.', 'success');
+  } catch (e) {
+    state.chatLoading = false;
+    toast(e.message, 'error');
+    renderChatStep4();
+  }
 }
 
 function renderHome(m) {
@@ -1156,7 +1558,10 @@ function renderHome(m) {
         </div>
       </div>
     </div>`;
-  document.getElementById('btn-home-new').addEventListener('click', () => { state.view = 'new'; state.step = 1; state.draft = defaultDraft(); renderMain(); });
+  document.getElementById('btn-home-new').addEventListener('click', () => {
+    // v3.10.0 — chat-style input is the default entry point
+    state.view = 'chat'; chatReset(); renderMain();
+  });
   document.getElementById('btn-quick-intake').addEventListener('click', async () => {
     const text = document.getElementById('quick-intake').value.trim();
     if (!text) return;

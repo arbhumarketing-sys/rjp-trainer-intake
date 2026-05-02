@@ -1,5 +1,15 @@
 /**
- * RJP Sourcing Pipeline — v3.9.0
+ * RJP Sourcing Pipeline — v3.10.0
+ *
+ * v3.10.0 (2026-05-02): Chat-style input + AskUserQuestion follow-up flow
+ * (server-side: new POST /api/briefs/ask-questions endpoint in server.js
+ * generating up to 15 multi-choice clarifying questions via Haiku; pipeline
+ * itself unchanged — operator's answers get appended to the brief's steering
+ * field as a CLARIFYING ANSWERS block, so the existing prompts in L1/L2/L3,
+ * classifier, and Sonnet rerank pick them up automatically without schema
+ * change). Frontend wizard is demoted behind an "advanced" link; default
+ * "+ New brief" goes to the chat view (Perplexity-style: type description →
+ * Haiku parse → multi-choice follow-ups → confirm → submit).
  *
  * v3.9.0 (2026-05-02): Three feature-shipments in one go.
  *   1. Iteration summary (Vijay's "send him iteration history & best matches"
