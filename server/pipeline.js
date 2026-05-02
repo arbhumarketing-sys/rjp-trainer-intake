@@ -1,5 +1,18 @@
 /**
- * RJP Sourcing Pipeline — v3.6
+ * RJP Sourcing Pipeline — v3.7
+ *
+ * v3.7 (2026-05-02): Two robustness fixes from the Netbrain + Splunk-1
+ * Form-1 feedback iterations:
+ *   1. Clarify endpoint (v3.6.1) now also catches single-word / generic
+ *      keywords (e.g., "splunk", "trainer", "freelance") AND over-long
+ *      must/should/mustNot items (>5 words). Both passed v3.6's prose
+ *      detector but produced useless searches. Surfaces a draft with
+ *      compound role-anchored keyword suggestions.
+ *   2. Pipeline post-classifier safety: signal/reason consistency check.
+ *      When Haiku returns a positive signal (TRAINER_EXPLICIT etc.) AND a
+ *      reason text containing negation phrases ("no training", "rejected
+ *      — out of domain", "non-X focus"), the candidate is demoted to NOISE.
+ *      Defends against the LLM contradicting itself under strict steering.
  *
  * v3.6 (2026-05-02): Conversational pre-submit clarification. New
  * `clarifyInput` helper + POST /api/briefs/clarify endpoint return a
@@ -1892,6 +1905,58 @@ function generateClarifyingQuestions(brief) {
   return qs.slice(0, 3);
 }
 
+/* v3.6.1 — single-word and over-long-must detection. Operators sometimes
+   submit one-word keywords ("splunk", "trainer", "freelance") which are too
+   broad to produce useful Google queries. They also sometimes paste full
+   requirement sentences into the must/should/mustNot fields, which the
+   pipeline then turns into exact-phrase Google operators that match zero
+   profiles. Both cases passed the v3.6 clarify check (looksLikeProse misses
+   them) but produce useless output. v3.6.1 catches them and surfaces a
+   clarification draft. */
+
+const _GENERIC_SOLO_KEYWORDS = new Set([
+  'trainer', 'instructor', 'consultant', 'expert', 'sme', 'architect', 'coach',
+  'freelance', 'corporate', 'independent', 'professional', 'specialist',
+  'customization', 'configuration', 'setup', 'training', 'observability',
+  'cloud', 'devops', 'security', 'data', 'analytics', 'engineer', 'developer',
+]);
+
+function detectShortKeywords(keywords) {
+  // Returns the keywords that are too short / generic to produce focused queries.
+  // Single-word keywords are always flagged (they should at least be 'X Trainer'
+  // or 'X Consultant' to give the search a role anchor). Two-word keywords made
+  // entirely of generic words ("freelance trainer", "corporate setup") are also
+  // flagged. Compound keywords mixing a domain + role ("Splunk Trainer", "AWS
+  // Architect") are NOT flagged even though the domain is a single word, because
+  // the role suffix anchors the query.
+  const out = [];
+  for (const k of keywords) {
+    if (typeof k !== 'string') continue;
+    const words = k.trim().split(/\s+/).filter(Boolean);
+    if (words.length === 0) continue;
+    if (words.length === 1) { out.push(k); continue; }
+    if (words.length === 2) {
+      const allGeneric = words.every(w => _GENERIC_SOLO_KEYWORDS.has(w.toLowerCase()));
+      if (allGeneric) out.push(k);
+    }
+  }
+  return out;
+}
+
+function detectLongMustItems(items, fieldName) {
+  // Returns items > 5 words. Must/Should/MustNot are wired to Google as
+  // exact-phrase operators (-"...", +"..."), so anything longer than ~3 words
+  // matches zero LinkedIn profiles. > 5 words is almost always a misplaced
+  // requirement sentence that belongs in the Steering field.
+  const out = [];
+  for (const it of (items || [])) {
+    if (typeof it !== 'string') continue;
+    const wc = it.trim().split(/\s+/).filter(Boolean).length;
+    if (wc > 5) out.push({ field: fieldName, value: it, wordCount: wc });
+  }
+  return out;
+}
+
 async function clarifyInput(brief, briefId) {
   const rawKeywords = Array.isArray(brief.keywords) ? brief.keywords.filter(k => typeof k === 'string') : [];
   const title  = brief.title  || '';
@@ -1912,15 +1977,13 @@ async function clarifyInput(brief, briefId) {
     };
   }
 
-  // Have keywords — analyse them.
+  // Run smartCleanKeywords (v3.5) — handles messy paste, prose, TOC fragments.
+  let cleaned = null;
+  let workingKeywords = rawKeywords.slice();
   if (rawKeywords.length > 0) {
-    const cleaned = await smartCleanKeywords(rawKeywords, domain, title, briefId);
+    cleaned = await smartCleanKeywords(rawKeywords, domain, title, briefId);
 
-    if (!cleaned.wasMessy) {
-      return { status: 'clear' };
-    }
-
-    // Cleaner returned 0 usable keywords — unsalvageable unless we have roles to fall back to.
+    // Cleaner returned 0 usable keywords — unsalvageable unless we have roles.
     if (cleaned.keywords.length === 0) {
       if (hasUsableRoles) {
         return {
@@ -1944,33 +2007,75 @@ async function clarifyInput(brief, briefId) {
       };
     }
 
-    // Salvageable — needs clarification with a draft.
-    const issues = [];
-    if (cleaned.proseDropped && cleaned.proseDropped.length) {
-      const sample = cleaned.proseDropped.slice(0, 3)
-        .map(k => '"' + k.slice(0, 60) + (k.length > 60 ? '…' : '') + '"').join(', ');
-      issues.push(`${cleaned.proseDropped.length} of your entries looked like prose, instructions, or section headers — not searchable keywords. Examples: ${sample}.`);
-    }
-    if (rawKeywords.length > 8) {
-      issues.push(`You provided ${rawKeywords.length} keyword entries — 4-8 focused keywords typically produce better quality.`);
-    }
-    if (cleaned.llmExtracted) {
-      issues.push('I used Haiku to extract trainer-profile keywords from your input.');
-    } else if (cleaned.wasMessy) {
-      issues.push('I tidied newlines, bullets, and trailing colons from your input.');
-    }
-
-    return {
-      status: 'needs_clarification',
-      issues,
-      draft: { keywords: cleaned.keywords },
-      questions: generateClarifyingQuestions(brief),
-      originalKeywords: rawKeywords,
-    };
+    workingKeywords = cleaned.keywords;
   }
 
-  // No keywords but have roles or domain — pipeline can derive keywords. Clear.
-  return { status: 'clear' };
+  // v3.5/v3.6.1 — collect issues from all checks.
+  const issues = [];
+  if (cleaned && cleaned.proseDropped && cleaned.proseDropped.length) {
+    const sample = cleaned.proseDropped.slice(0, 3)
+      .map(k => '"' + k.slice(0, 60) + (k.length > 60 ? '…' : '') + '"').join(', ');
+    issues.push(`${cleaned.proseDropped.length} of your entries looked like prose, instructions, or section headers — not searchable keywords. Examples: ${sample}.`);
+  }
+  if (rawKeywords.length > 8) {
+    issues.push(`You provided ${rawKeywords.length} keyword entries — 4-8 focused keywords typically produce better quality.`);
+  }
+  if (cleaned && cleaned.llmExtracted) {
+    issues.push('I used Haiku to extract trainer-profile keywords from your input.');
+  } else if (cleaned && cleaned.wasMessy) {
+    issues.push('I tidied newlines, bullets, and trailing colons from your input.');
+  }
+
+  // v3.6.1 — single-word / generic short keywords. The pipeline turns each
+  // keyword into a Google query; one-word generic keywords like "splunk" or
+  // "trainer" produce queries that match millions of irrelevant profiles.
+  // The fix is to anchor each with a role suffix.
+  const shortKws = detectShortKeywords(workingKeywords);
+  let suggestedKeywords = workingKeywords.slice();
+  if (shortKws.length > 0) {
+    issues.push(`These keywords are too short / generic to focus the search: ${shortKws.map(k => '"' + k + '"').join(', ')}. Each keyword should anchor a domain with a role suffix — e.g., "${domain || 'Splunk'} Trainer", "${domain || 'Splunk'} Consultant", "Freelance ${domain || 'Splunk'} Architect" — instead of single words like "trainer" or "freelance" on their own.`);
+    // Build a suggested keyword list: drop the short ones, suggest compound
+    // forms using domain + standard role suffixes for any gaps.
+    const role_suffixes = ['Trainer', 'Consultant', 'Architect', 'SME'];
+    const rest = workingKeywords.filter(k => !shortKws.includes(k));
+    const dom = (domain || '').trim();
+    if (dom && rest.length < 4) {
+      for (const suf of role_suffixes) {
+        const cand = `${dom} ${suf}`;
+        if (!rest.some(k => k.toLowerCase() === cand.toLowerCase())) rest.push(cand);
+        if (rest.length >= 6) break;
+      }
+    }
+    suggestedKeywords = rest.slice(0, 8);
+  }
+
+  // v3.6.1 — over-long must/should/mustNot items. These get wired into Google
+  // as exact-phrase operators (-"...", +"...") which match zero LinkedIn
+  // profiles when over ~3 words. Sentences belong in the Steering field.
+  const longMust = [
+    ...detectLongMustItems(brief.must,    'Must include'),
+    ...detectLongMustItems(brief.should,  'Should include'),
+    ...detectLongMustItems(brief.mustNot, 'Must NOT include'),
+  ];
+  if (longMust.length > 0) {
+    const sample = longMust.slice(0, 2)
+      .map(x => `${x.field}: "${x.value.slice(0, 70)}${x.value.length > 70 ? '…' : ''}" (${x.wordCount} words)`).join('; ');
+    issues.push(`Items in Must/Should/MustNot become exact-phrase Google filters (e.g. \`-"X"\`) that match zero profiles when over ~3 words. ${longMust.length} item(s) are >5 words — move them to the Steering field where the LLM can interpret them as guidance. Examples: ${sample}.`);
+  }
+
+  // No issues at all → clear. Otherwise, return the structured clarification.
+  if (issues.length === 0) {
+    return { status: 'clear' };
+  }
+
+  return {
+    status: 'needs_clarification',
+    issues,
+    draft: { keywords: suggestedKeywords },
+    questions: generateClarifyingQuestions(brief),
+    originalKeywords: rawKeywords,
+    ...(longMust.length > 0 ? { longMustItems: longMust } : {}),
+  };
 }
 
 /* ---------- Main pipeline ---------- */
@@ -2150,6 +2255,35 @@ async function runPipeline(briefId, opts = {}) {
     }
     if (safetyOverrides > 0) {
       logAndSave(briefId, `[classifier safety] regex overrode ${safetyOverrides} LLM verdict(s) on hard-exclude rules (BIG_FIRM/NON_INDIA/MUSTNOT_HIT)`, 'warn');
+    }
+
+    // v3.7: Signal-vs-reason consistency check. Haiku occasionally returns
+    // a positive signal (TRAINER_EXPLICIT / FREELANCE_TRAINER / etc.) AND a
+    // reason text that contradicts it ("no training", "rejected — out of
+    // domain", "non-Netbrain focus"). Observed on the 2026-05-02 Netbrain
+    // and Splunk-1 reruns: 4 candidates accepted as TRAINER_EXPLICIT despite
+    // reasons literally saying "rejected — out of Netbrain". The signal
+    // alone determines accept/reject in compositeScore, so contradictions
+    // slip into the final list and pollute output.
+    //
+    // Detection: scan each non-rejected reason for negation phrases near
+    // training/domain terms. If found, demote to NOISE (rejected). Defends
+    // against LLM contradicting itself when steering is strict.
+    const NEGATION_RE = /\b(?:no\s+(?:training|teaching|netbrain|splunk|salesforce|domain)\b|not\s+(?:a\s+)?(?:trainer|relevant|netbrain|splunk|domain)\b|rejected\s*[—\-:]|out\s+of\s+(?:domain|netbrain|splunk|aws|salesforce|scope)\b|without\s+\w+\s+(?:depth|expertise|experience|training|focus)\b|lacks?\s+\w+\s+(?:depth|expertise|experience|training|focus)\b|non-\w+\s+focus\b|no\s+teaching\s+evidence\b|skilled\s+but\s+no\s+training\b)/i;
+    let consistencyOverrides = 0;
+    for (let i = 0; i < classifications.length; i++) {
+      const cls = classifications[i];
+      if (!cls || REJECTED_SIGNALS.has(cls.signal)) continue;
+      if (cls.reason && NEGATION_RE.test(cls.reason)) {
+        classifications[i] = {
+          signal: 'NOISE',
+          reason: `[demoted by consistency check — reason text negated the positive signal] Original: ${cls.reason}`,
+        };
+        consistencyOverrides++;
+      }
+    }
+    if (consistencyOverrides > 0) {
+      logAndSave(briefId, `[classifier consistency] ${consistencyOverrides} candidate(s) demoted to NOISE because the LLM's reason text contradicted its own positive signal (e.g., "no training", "rejected — out of <domain>", "non-X focus")`, 'warn');
     }
 
     const scored = normalised.map((it, i) => {
