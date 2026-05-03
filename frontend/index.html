@@ -778,12 +778,8 @@ const DOMAIN_OPTIONS = [
   'Backstage.io', 'Kubernetes', 'DevOps', 'Data Science / ML',
   'Java', 'Python', 'Cybersecurity', 'SAP', 'Other (specify below)'
 ];
-const LOCATIONS = ['All India', 'Bangalore', 'Mumbai', 'Delhi / NCR', 'Hyderabad', 'Pune', 'Chennai', 'Remote OK'];
-const OUTPUT_OPTIONS = [
-  { v: 'xlsx',  l: 'Excel (.xlsx)',  d: 'Default. Best for review and editing.' },
-  { v: 'sheet', l: 'Google Sheet',   d: 'Shared link, real-time collaboration.' },
-  { v: 'pdf',   l: 'PDF',            d: 'Read-only, easy to share externally.' },
-];
+// v3.24.0 — LOCATIONS + OUTPUT_OPTIONS removed (wizard-only constants;
+// chat flow asks location as a clarifying question and only ever builds .xlsx)
 
 /* ============================================================ */
 /* STATE                                                        */
@@ -792,12 +788,11 @@ let state = {
   token: 'open',  // auth removed 2026-05-01; sentinel keeps Authorization header machinery happy
   briefs: [],
   // v3.23.0 — featureRequests + persistentExclusions removed (admin tab gone)
-  view: 'home',         // home | new | detail | admin
-  step: 1,              // 1..4 inside new-brief flow
+  // v3.24.0 — view space simplified: home | chat | detail (wizard + admin gone)
+  view: 'home',
   activeBriefId: null,
   liveBrief: null,
   pollTimer: null,
-  draft: defaultDraft(),
   defaultExclusions: [],
   // v3.2 backend health surface — drives the cold-start banner + warm-up button
   backendStatus: 'unknown',  // unknown | warming | warm | cold
@@ -805,10 +800,7 @@ let state = {
   backendDirty: null,        // { briefs, featureRequests } from /healthz
   backendCheckedAt: null,    // ms timestamp
   healthTimer: null,
-  // v3.6 conversational pre-submit clarification (wizard step 4)
-  clarifyLoading: false,
-  clarifyResult: null,       // null | { status, issues, draft, questions, ... }
-  clarifyReqId: 0,           // bumped per request, used to drop stale responses
+  // v3.24.0 — clarify state was wizard-only; removed
   // v3.9.0 — candidate scoring cache. { briefId: { candidateUrl: 'selected'|'hold'|'rejected' } }
   candidateScores: {},
   // v3.18.0 — outreach tracker. Map keyed by briefId → { candidateUrl: status }.
@@ -1012,8 +1004,6 @@ function showWelcomeModal() {
     if (!name) { err.textContent = 'Please enter your name.'; err.style.display = 'block'; return; }
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { err.textContent = 'Please enter a valid email address.'; err.style.display = 'block'; return; }
     saveOperator(name, email);
-    state.draft.operatorName = name;
-    state.draft.operatorEmail = email;
     state.chatOpName = name;
     state.chatOpEmail = email;
     overlay.remove();
@@ -1025,34 +1015,8 @@ function showWelcomeModal() {
     document.getElementById(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
   });
 }
-function defaultDraft() {
-  return {
-    operatorName: '', operatorEmail: '',
-    domain: '', customDomain: '',
-    keywords: '',                       // v3.1 — multi-keyword (one per line)
-    searchMode: 'std',                  // std | niche
-    roles: [{ title: '', skill: '', bucket: '', count: 5 }],
-    location: 'All India',
-    must: '',                           // v3.1 — boolean must-include
-    should: '',                         // v3.1 — boolean should-include
-    mustNot: '',                        // v3.1 — boolean must-NOT-include
-    clientCompany: '',                  // v3.1 — exclusion: client itself
-    clientPrincipal: '',                // v3.1 — exclusion: their existing principal (e.g. HCL)
-    customExclusions: '',               // v3.1 — extra companies, one per line
-    advancedOpen: false,
-    advanced: { queryDepth: 12, sources: {
-      linkedin: true, urbanpro: true, youtube: true, udemy: true, blogs: true,
-      // v3.3 — new source toggles, all default ON
-      indianPlatforms: true, authorityDirectories: true, coursePlatforms: true,
-      meetup: true, eventbrite: true, github: true,
-    } },
-    steering: '',
-    outputFormat: 'xlsx',
-    deadline: '',
-    // quickIntake removed in v3.21.0 — Quick Intake feature retired in favor
-    // of the chat-flow's Step 1 (which does the same parse with better UX).
-  };
-}
+// v3.24.0 — defaultDraft() removed (wizard gone; chat flow uses state.chatParsed,
+// state.chatInput, state.chatOpName/Email instead — no shared draft state needed)
 
 /* ============================================================ */
 /* API                                                          */
@@ -1277,8 +1241,6 @@ function wireShell() {
     e.preventDefault();
     if (!confirm('Clear saved identity and switch user?')) return;
     clearOperator();
-    state.draft.operatorName = '';
-    state.draft.operatorEmail = '';
     state.chatOpName = '';
     state.chatOpEmail = '';
     render();
@@ -1566,8 +1528,8 @@ function renderMain() {
   const m = document.getElementById('main');
   if (!m) return;
   if (state.view === 'chat') return renderChat(m);
-  if (state.view === 'new') return renderWizard(m);
   // v3.23.0 — admin view removed
+  // v3.24.0 — wizard ('new') view removed
   if (state.view === 'detail' && state.activeBriefId) return renderDetail(m);
   return renderHome(m);
 }
@@ -1624,14 +1586,9 @@ function renderChat(m) {
       </div>
       <div class="chat-stepper">${stepEls}</div>
       <div id="chat-body"></div>
-      <a href="#" class="chat-link-advanced" id="chat-link-wizard">Use the advanced wizard form instead →</a>
     </div>
   `;
-  document.getElementById('chat-link-wizard').addEventListener('click', e => {
-    e.preventDefault();
-    state.view = 'new'; state.step = 1; state.draft = defaultDraft();
-    renderMain();
-  });
+  // v3.24.0 — "advanced wizard" link removed (wizard codepath gone)
   if (state.chatStep === 1) renderChatStep1();
   else if (state.chatStep === 2) renderChatStep2();
   else if (state.chatStep === 3) renderChatStep3();
@@ -1979,652 +1936,6 @@ function renderHome(m) {
 // Backend endpoints + Postgres tables retained (orphaned but harmless) so any
 // historical references stay queryable. Can be fully purged in a later cleanup.
 
-/* ============================================================ */
-/* WIZARD                                                       */
-/* ============================================================ */
-function renderWizard(m) {
-  const labels = ['Operator', 'Domain & roles', 'Location & specifics', 'Review'];
-  const stepEls = labels.map((lbl, i) => {
-    const n = i + 1;
-    const cls = n === state.step ? 'active' : (n < state.step ? 'done' : '');
-    return `
-      <div class="stepper-item ${cls}">
-        <div class="stepper-num">${cls === 'done' ? '✓' : n}</div>
-        <div class="stepper-label">${lbl}</div>
-      </div>
-      ${n < labels.length ? '<div class="stepper-bar"></div>' : ''}
-    `;
-  }).join('');
-
-  m.innerHTML = `
-    <div class="center">
-      <div class="page-head">
-        <h1>New sourcing brief</h1>
-        <div class="sub">Fill in what you need. The pipeline runs automatically — no waiting on email approvals.</div>
-      </div>
-      <div class="stepper">${stepEls}</div>
-      <div id="wizard-body"></div>
-    </div>
-  `;
-  if (state.step === 1) renderStep1();
-  else if (state.step === 2) renderStep2();
-  else if (state.step === 3) renderStep3();
-  else if (state.step === 4) renderStep4();
-}
-
-function navButtons(canNext, nextLabel) {
-  return `
-    <div class="panel-actions">
-      <button class="btn" id="btn-back" ${state.step === 1 ? 'style="visibility:hidden;"' : ''}>← Back</button>
-      <button class="btn primary" id="btn-next" ${!canNext ? 'disabled' : ''}>${nextLabel || 'Next →'}</button>
-    </div>
-  `;
-}
-function wireNav() {
-  const back = document.getElementById('btn-back');
-  if (back) back.addEventListener('click', () => {
-    // v3.6: when leaving review step (4), clear any stale clarification
-    // verdict so re-entry triggers a fresh /api/briefs/clarify call against
-    // the (possibly edited) draft.
-    if (state.step === 4) {
-      state.clarifyResult = null;
-      state.clarifyLoading = false;
-    }
-    state.step--;
-    renderWizard(document.getElementById('main'));
-  });
-}
-
-/* Step 1 — operator. v3.13.0: when a stored operator identity exists, skip
-   this step entirely and jump straight to Step 2 — the wizard inherits the
-   header chip's identity. Only renders when the operator has not been
-   captured yet, which on a fresh browser also triggers showWelcomeModal(). */
-function renderStep1() {
-  const d = state.draft;
-  if (state.operator) {
-    d.operatorName = state.operator.name;
-    d.operatorEmail = state.operator.email;
-    state.step = 2;
-    return renderWizard(document.getElementById('main'));
-  }
-  document.getElementById('wizard-body').innerHTML = `
-    <div class="panel">
-      <h3>Who's submitting this?</h3>
-      <div class="panel-sub">We use this to label the brief in the repository and on the output file. We'll save it so you don't have to type it again.</div>
-
-      <div class="field">
-        <label class="lbl">Your name</label>
-        <input id="op-name" value="${esc(d.operatorName)}" placeholder="e.g. your name" />
-        <div class="err">Please enter your name.</div>
-      </div>
-      <div class="field">
-        <label class="lbl">Your email</label>
-        <input id="op-email" type="email" value="${esc(d.operatorEmail)}" placeholder="you@rjpinfotek.com" />
-        <div class="err">Please enter a valid email.</div>
-      </div>
-
-      ${navButtons(true)}
-    </div>
-  `;
-  wireNav();
-  document.getElementById('btn-next').addEventListener('click', () => {
-    const name = document.getElementById('op-name').value.trim();
-    const email = document.getElementById('op-email').value.trim();
-    let ok = true;
-    if (!name) { document.getElementById('op-name').closest('.field').classList.add('has-error'); ok = false; }
-    if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { document.getElementById('op-email').closest('.field').classList.add('has-error'); ok = false; }
-    if (!ok) return;
-    state.draft.operatorName = name;
-    state.draft.operatorEmail = email;
-    saveOperator(name, email);  // v3.13.0 — capture once, keep forever
-    state.step = 2;
-    renderWizard(document.getElementById('main'));
-  });
-}
-
-/* Step 2 — domain + roles + keywords + mode (v3.1) */
-function renderStep2() {
-  const d = state.draft;
-  document.getElementById('wizard-body').innerHTML = `
-    <div class="panel">
-      <h3>Domain, keywords & mode</h3>
-      <div class="panel-sub">Pick the stack, type any number of keyword variants you want searched, and choose the search mode.</div>
-
-      <div class="field">
-        <label class="lbl">Search mode</label>
-        <div class="mode-toggle" id="mode-toggle">
-          <button type="button" data-mode="std"   class="${d.searchMode === 'std' ? 'on' : ''}">Standard</button>
-          <button type="button" data-mode="niche" class="${d.searchMode === 'niche' ? 'on' : ''}">Niche</button>
-        </div>
-        <div class="hint" style="margin-top:6px;" id="mode-hint">${d.searchMode === 'niche'
-          ? 'Niche — rare tech. Pipeline runs adjacent-tech expansion via Claude, weights small-firm Founders/Principals higher, and falls back to institutes/Udemy/YouTube if profiles are thin. Target TAT ~12 min.'
-          : 'Standard — well-supplied tech (AWS, Salesforce, Java). LinkedIn-first, ~12 queries, target TAT ~8 min.'}</div>
-      </div>
-
-      <div class="field">
-        <label class="lbl">Primary domain</label>
-        <select id="f-domain">
-          <option value="">— Select domain —</option>
-          ${DOMAIN_OPTIONS.map(o => `<option value="${esc(o)}" ${d.domain === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}
-        </select>
-        <div class="err">Please pick a domain.</div>
-      </div>
-
-      <div class="field" id="custom-wrap" style="display:${(d.domain && d.domain.startsWith('Other')) ? 'flex' : 'none'};">
-        <label class="lbl">Specify domain</label>
-        <input id="f-custom" value="${esc(d.customDomain)}" placeholder="e.g. SAP FICO, Aurora PostgreSQL DBA, Splunk Cloud Observability" />
-      </div>
-
-      <div class="field">
-        <label class="lbl">Search keywords <span style="color:var(--ink-3);font-weight:400;font-size:11.5px;">— one per line, list as many as needed</span></label>
-        <div class="hint">Each keyword runs its own L1 cascade (Claude → Google → LinkedIn enrichment). Results dedupe at the end. Example for Siebel→SF: <code>Salesforce Developer / Solution Architect</code>, <code>Salesforce Implementation Consultant</code>, <code>Salesforce Data Migration Expert</code>, <code>Salesforce Middleware Expert</code>.</div>
-        <textarea id="f-keywords" rows="5" placeholder="Salesforce Developer&#10;Salesforce Solution Architect&#10;Salesforce Implementation Consultant&#10;Salesforce Data Migration Expert">${esc(d.keywords)}</textarea>
-      </div>
-
-      <div class="field">
-        <label class="lbl">Roles required <span style="color:var(--ink-3);font-weight:400;font-size:11.5px;">— optional structured headcount per role</span></label>
-        <div class="hint">Useful when one brief has multiple buckets (Functional + Technical + Migration). If you don't need this, leave the single placeholder row as-is.</div>
-        <div class="roles-grid">
-          <div class="roles-head">
-            <div></div>
-            <div>Role title</div>
-            <div>Must-have skill</div>
-            <div>Bucket</div>
-            <div>Count</div>
-            <div></div>
-          </div>
-          <div id="roles-rows"></div>
-        </div>
-        <div style="display:flex;gap:8px;align-items:center;margin-top:6px;">
-          <button class="btn" id="btn-add-role" type="button">+ Add another role</button>
-        </div>
-      </div>
-
-      ${navButtons(true)}
-    </div>
-  `;
-  wireNav();
-  // domain change
-  document.getElementById('f-domain').addEventListener('change', e => {
-    state.draft.domain = e.target.value;
-    document.getElementById('custom-wrap').style.display = e.target.value.startsWith('Other') ? 'flex' : 'none';
-  });
-
-  // render roles
-  const rolesDiv = document.getElementById('roles-rows');
-  function paintRoles() {
-    rolesDiv.innerHTML = state.draft.roles.map((r, i) => `
-      <div class="role-row" data-i="${i}">
-        <div class="role-num">${i + 1}</div>
-        <div><input data-k="title" value="${esc(r.title)}" placeholder="e.g. Salesforce Admin Trainer" /></div>
-        <div><input data-k="skill" value="${esc(r.skill)}" placeholder="e.g. Sales Cloud + Lightning" /></div>
-        <div><input data-k="bucket" value="${esc(r.bucket)}" placeholder="Functional / Technical / etc." /></div>
-        <div><input data-k="count" type="number" min="1" value="${r.count}" /></div>
-        <div><button class="role-del" type="button" title="Remove">×</button></div>
-      </div>
-    `).join('');
-    rolesDiv.querySelectorAll('input').forEach(inp => {
-      inp.addEventListener('input', e => {
-        const i = parseInt(e.target.closest('.role-row').dataset.i, 10);
-        const k = e.target.dataset.k;
-        if (k === 'count') state.draft.roles[i][k] = parseInt(e.target.value, 10) || 1;
-        else state.draft.roles[i][k] = e.target.value;
-      });
-    });
-    rolesDiv.querySelectorAll('.role-del').forEach(b => b.addEventListener('click', e => {
-      const i = parseInt(e.target.closest('.role-row').dataset.i, 10);
-      if (state.draft.roles.length === 1) { toast('Keep at least one role row.', 'error'); return; }
-      state.draft.roles.splice(i, 1);
-      paintRoles();
-    }));
-  }
-  paintRoles();
-  document.getElementById('btn-add-role').addEventListener('click', () => {
-    state.draft.roles.push({ title: '', skill: '', bucket: '', count: 5 });
-    paintRoles();
-  });
-
-  // mode toggle
-  document.querySelectorAll('#mode-toggle button').forEach(b => b.addEventListener('click', () => {
-    state.draft.searchMode = b.dataset.mode;
-    document.querySelectorAll('#mode-toggle button').forEach(x => x.classList.toggle('on', x.dataset.mode === state.draft.searchMode));
-    document.getElementById('mode-hint').textContent = state.draft.searchMode === 'niche'
-      ? 'Niche — rare tech. Pipeline runs adjacent-tech expansion via Claude, weights small-firm Founders/Principals higher, and falls back to institutes/Udemy/YouTube if profiles are thin. Target TAT ~12 min.'
-      : 'Standard — well-supplied tech (AWS, Salesforce, Java). LinkedIn-first, ~12 queries, target TAT ~8 min.';
-  }));
-
-  document.getElementById('btn-next').addEventListener('click', () => {
-    let ok = true;
-    if (!state.draft.domain) { document.getElementById('f-domain').closest('.field').classList.add('has-error'); ok = false; }
-    if (state.draft.domain.startsWith('Other')) {
-      state.draft.customDomain = document.getElementById('f-custom').value.trim();
-    }
-    state.draft.keywords = document.getElementById('f-keywords').value;
-    const validRoles = state.draft.roles.filter(r => r.title.trim());
-    const hasKeywords = state.draft.keywords.trim().length > 0;
-    if (!validRoles.length && !hasKeywords) { toast('Add at least one keyword (or a role with a title).', 'error'); ok = false; }
-    if (!ok) return;
-    state.draft.roles = (validRoles.length ? validRoles : []).map(r => ({ ...r, count: r.count || 1 }));
-    state.step = 3;
-    renderWizard(document.getElementById('main'));
-  });
-}
-
-/* Step 3 — location, boolean filters, three-pronged exclusion, advanced (v3.1) */
-function renderStep3() {
-  const d = state.draft;
-  const adv = d.advanced || {};
-  const sources = adv.sources || { linkedin: true, urbanpro: true, youtube: true, udemy: true, blogs: true };
-  document.getElementById('wizard-body').innerHTML = `
-    <div class="panel">
-      <h3>Filters & exclusions</h3>
-      <div class="panel-sub">Boolean operators on Google queries, three-pronged exclusion, optional advanced settings for the searcher. Big Indian SIs (Tech M, Wipro, Cognizant, HCL, Infy, TCS, Accenture, Capgemini) are excluded by default — you don't have to type them.</div>
-
-      <div class="field">
-        <label class="lbl">Location preference</label>
-        <div class="chip-row" id="loc-chips">
-          ${LOCATIONS.map(l => `<label class="chip ${d.location === l ? 'on' : ''}">
-            <input type="radio" name="loc" value="${esc(l)}" ${d.location === l ? 'checked' : ''}> ${esc(l)}
-          </label>`).join('')}
-        </div>
-      </div>
-
-      <div class="field">
-        <label class="lbl">Must include (AND) <span style="color:var(--ink-3);font-weight:400;font-size:11.5px;">— required terms in every query, one per line</span></label>
-        <textarea id="f-must" rows="3" placeholder="e.g.&#10;certified&#10;corporate trainer">${esc(d.must)}</textarea>
-      </div>
-
-      <div class="field">
-        <label class="lbl">Should include (OR) <span style="color:var(--ink-3);font-weight:400;font-size:11.5px;">— at least one of these in each query</span></label>
-        <textarea id="f-should" rows="3" placeholder="e.g.&#10;functional&#10;technical&#10;migration&#10;integration">${esc(d.should)}</textarea>
-      </div>
-
-      <div class="field">
-        <label class="lbl">Must NOT include (NOT) <span style="color:var(--ink-3);font-weight:400;font-size:11.5px;">— hard filter terms</span></label>
-        <textarea id="f-mustnot" rows="3" placeholder="e.g.&#10;intern&#10;student&#10;junior">${esc(d.mustNot)}</textarea>
-      </div>
-
-      <div class="field">
-        <label class="lbl">Client company (excluded from results)</label>
-        <div class="hint">If RJP is sourcing for ClientX, type "ClientX" — anyone working at ClientX gets filtered out.</div>
-        <input id="f-client" value="${esc(d.clientCompany)}" placeholder="e.g. ClientX Pvt Ltd" />
-      </div>
-
-      <div class="field">
-        <label class="lbl">Client's existing principal (also excluded)</label>
-        <div class="hint">If the client is currently served by HCL or another principal partner, exclude that too. Distinct from "must NOT" above.</div>
-        <input id="f-principal" value="${esc(d.clientPrincipal)}" placeholder="e.g. HCL Technologies" />
-      </div>
-
-      <div class="field">
-        <label class="lbl">Custom company exclusions <span style="color:var(--ink-3);font-weight:400;font-size:11.5px;">— one per line, on top of the default big-firm list</span></label>
-        <textarea id="f-customex" rows="3" placeholder="e.g.&#10;InfraCloud Technologies&#10;Some other firm already engaged">${esc(d.customExclusions)}</textarea>
-      </div>
-
-      <div class="field">
-        <label class="lbl">Specific direction (free text, optional)</label>
-        <div class="hint">Anything you want done differently — what to prioritise, how to organise output. Searcher reads this when reviewing.</div>
-        <textarea id="f-steering" rows="4" placeholder="Examples:&#10;• Prioritise OmniStudio over generic admin&#10;• Sort by years of experience descending&#10;• Skip InfraCloud — already engaged">${esc(d.steering)}</textarea>
-      </div>
-
-      <div class="field">
-        <label class="lbl">Output format</label>
-        <div class="chip-row">
-          ${OUTPUT_OPTIONS.map(o => `<label class="chip ${d.outputFormat === o.v ? 'on' : ''}" title="${esc(o.d)}">
-            <input type="radio" name="output" value="${esc(o.v)}" ${d.outputFormat === o.v ? 'checked' : ''}> ${esc(o.l)}
-          </label>`).join('')}
-        </div>
-      </div>
-
-      <div class="field">
-        <label class="lbl">Deadline (optional)</label>
-        <input id="f-deadline" type="date" value="${esc(d.deadline)}" />
-      </div>
-
-      <!-- Advanced searcher panel -->
-      <div class="panel-collapsible ${d.advancedOpen ? 'open' : ''}" id="adv-panel">
-        <div class="panel-collapsible-head" id="adv-head">
-          <h4>Advanced search settings</h4>
-          <span style="color:var(--ink-3);font-size:11px;">${d.advancedOpen ? 'Hide' : 'Show'}</span>
-        </div>
-        <div class="panel-collapsible-body">
-          <div class="advanced-grid">
-            <div class="field" style="margin:0;">
-              <label class="lbl">Query depth (1–25)</label>
-              <input id="adv-depth" type="number" min="1" max="25" value="${esc(adv.queryDepth || (d.searchMode === 'niche' ? 20 : 12))}" />
-            </div>
-            <div class="field" style="margin:0;">
-              <label class="lbl">Source toggles</label>
-              <div class="hint">All default ON. Disable individually if you want a tighter, faster brief.</div>
-              <div class="source-toggles">
-                ${[
-                  { k: 'linkedin',             l: 'LinkedIn' },
-                  { k: 'urbanpro',             l: 'UrbanPro / Sulekha' },
-                  { k: 'blogs',                l: 'Tech blogs (Hashnode, Dev.to, Medium, Substack)' },
-                  { k: 'youtube',              l: 'YouTube tutorials' },
-                  { k: 'udemy',                l: 'Udemy courses' },
-                  { k: 'indianPlatforms',      l: 'Indian training platforms (Edureka, Simplilearn, GreatLearning, UpGrad, AnalyticsVidhya, Whizlabs, KodeKloud)' },
-                  { k: 'authorityDirectories', l: 'Authority directories (MS MVP, Google GDE, AWS Hero, Salesforce Trailblazer, CNCF)' },
-                  { k: 'coursePlatforms',      l: "Course platforms (Coursera, Pluralsight, LinkedIn Learning, O'Reilly)" },
-                  { k: 'meetup',               l: 'Meetup.com organizers' },
-                  { k: 'eventbrite',           l: 'Eventbrite workshop hosts' },
-                  { k: 'github',               l: 'GitHub educational repos' },
-                ].map(({ k, l }) => `
-                  <label class="chip ${sources[k] !== false ? 'on' : ''}" title="${esc(l)}"><input type="checkbox" data-src="${k}" ${sources[k] !== false ? 'checked' : ''}> ${esc(l)}</label>
-                `).join('')}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      ${navButtons(true)}
-    </div>
-  `;
-  wireNav();
-  document.querySelectorAll('#loc-chips .chip').forEach(c => {
-    c.addEventListener('click', () => {
-      document.querySelectorAll('#loc-chips .chip').forEach(x => x.classList.remove('on'));
-      c.classList.add('on');
-      state.draft.location = c.querySelector('input').value;
-    });
-  });
-  document.querySelectorAll('.chip input[name="output"]').forEach(inp => {
-    inp.addEventListener('change', e => {
-      document.querySelectorAll('.chip input[name="output"]').forEach(x => x.closest('.chip').classList.remove('on'));
-      e.target.closest('.chip').classList.add('on');
-      state.draft.outputFormat = e.target.value;
-    });
-  });
-  // Advanced panel toggle
-  document.getElementById('adv-head').addEventListener('click', () => {
-    state.draft.advancedOpen = !state.draft.advancedOpen;
-    document.getElementById('adv-panel').classList.toggle('open', state.draft.advancedOpen);
-  });
-  document.querySelectorAll('.source-toggles .chip').forEach(c => {
-    c.addEventListener('click', e => {
-      const cb = c.querySelector('input');
-      // small delay for native checkbox toggle
-      setTimeout(() => {
-        c.classList.toggle('on', cb.checked);
-        state.draft.advanced.sources = state.draft.advanced.sources || {};
-        state.draft.advanced.sources[cb.dataset.src] = cb.checked;
-      }, 0);
-    });
-  });
-
-  document.getElementById('btn-next').addEventListener('click', () => {
-    state.draft.must = document.getElementById('f-must').value;
-    state.draft.should = document.getElementById('f-should').value;
-    state.draft.mustNot = document.getElementById('f-mustnot').value;
-    state.draft.clientCompany = document.getElementById('f-client').value.trim();
-    state.draft.clientPrincipal = document.getElementById('f-principal').value.trim();
-    state.draft.customExclusions = document.getElementById('f-customex').value;
-    state.draft.steering = document.getElementById('f-steering').value;
-    state.draft.deadline = document.getElementById('f-deadline').value;
-    state.draft.advanced.queryDepth = parseInt(document.getElementById('adv-depth').value, 10) || 12;
-    state.step = 4;
-    renderWizard(document.getElementById('main'));
-  });
-}
-
-/* Step 4 — review + preview + submit */
-function renderStep4() {
-  const d = state.draft;
-  const totalCount = d.roles.reduce((a, r) => a + (r.count || 0), 0);
-  const domainShown = d.domain.startsWith('Other') ? (d.customDomain || 'Other (unspecified)') : d.domain;
-  const kwLines = (d.keywords || '').split('\n').map(s => s.trim()).filter(Boolean);
-  const fieldList = (s) => s ? esc(s).replace(/\n/g, '<br/>') : '—';
-
-  // v3.6: clarification panel content. The verdict is computed by the
-  // /api/briefs/clarify backend endpoint (1 Haiku call only when input
-  // looks messy). Three verdicts: clear / needs_clarification /
-  // unsalvageable. Buttons swap based on the verdict (see actionsHtml).
-  const clarifyHtml = renderClarifyPanel();
-  const actionsHtml = renderClarifyActions();
-
-  document.getElementById('wizard-body').innerHTML = `
-    <div class="panel">
-      <h3>Review, preview, submit</h3>
-      <div class="panel-sub">Run a 60-second pre-flight to see 5 sample profiles before committing the full pipeline. Then submit.</div>
-
-      ${clarifyHtml}
-
-      <div class="review-grid">
-        <div>Operator</div><div>${esc(d.operatorName)} · ${esc(d.operatorEmail)}</div>
-        <div>Mode</div><div>${d.searchMode === 'niche' ? 'Niche' : 'Standard'}</div>
-        <div>Domain</div><div>${esc(domainShown)}</div>
-        <div>Keywords</div><div>${kwLines.length ? kwLines.map(k => esc(k)).join('<br/>') : '— (using roles only)'}</div>
-        <div>Roles</div><div>${d.roles.length ? d.roles.map((r, i) => `${i + 1}. ${esc(r.title)} (×${r.count}${r.skill ? ' · ' + esc(r.skill) : ''}${r.bucket ? ' · ' + esc(r.bucket) : ''})`).join('<br/>') : '—'}</div>
-        <div>Total headcount</div><div>${totalCount}</div>
-        <div>Location</div><div>${esc(d.location)}</div>
-        <div>Must include</div><div>${fieldList(d.must)}</div>
-        <div>Should include</div><div>${fieldList(d.should)}</div>
-        <div>Must NOT include</div><div>${fieldList(d.mustNot)}</div>
-        <div>Client (excluded)</div><div>${esc(d.clientCompany) || '—'}</div>
-        <div>Client principal (excluded)</div><div>${esc(d.clientPrincipal) || '—'}</div>
-        <div>Custom exclusions</div><div>${fieldList(d.customExclusions)}</div>
-        <div>Default exclusions</div><div style="color:var(--ink-3);font-size:12px;">Tech Mahindra, Cognizant, Wipro, HCL, Infosys, TCS, Accenture, Capgemini, Mindtree, LTIMindtree, Mphasis, IBM India, Oracle India</div>
-        <div>Specific direction</div><div>${fieldList(d.steering)}</div>
-        <div>Output</div><div>${esc((OUTPUT_OPTIONS.find(o => o.v === d.outputFormat) || {}).l || d.outputFormat)}</div>
-        <div>Deadline</div><div>${esc(d.deadline) || '—'}</div>
-      </div>
-
-      ${state.backendStatus !== 'warm' ? `
-        <div class="wizard-cold-hint">
-          <span>${state.backendStatus === 'cold' ? '⚠' : '⏳'}</span>
-          <span>${state.backendStatus === 'cold'
-            ? 'Backend looks offline. Click <strong>⚡ Warm up</strong> in the top bar before submitting, otherwise this submission will fail.'
-            : 'Backend is still warming up. Submission will work but may take 20-30s longer than usual to start. Click <strong>⚡ Warm up</strong> and wait for green if you want to be sure.'}</span>
-        </div>
-      ` : ''}
-
-      ${actionsHtml}
-    </div>
-  `;
-  wireNav();
-  wireClarifyActions();
-
-  // Eagerly fire the clarify call on entering step 4 (Q2 from design review).
-  // Skips if a result is already cached for this draft, or if a request is
-  // already in flight (clarifyLoading guard).
-  if (!state.clarifyLoading && !state.clarifyResult) {
-    runClarify();
-  }
-}
-
-/* ---------- v3.6 Clarification helpers ---------- */
-function renderClarifyPanel() {
-  if (state.clarifyLoading) {
-    return `<div class="clarify-panel loading"><span class="clarify-icon">⟳</span><div class="clarify-body">Checking your brief — extracting trainer-profile keywords if your input is messy…</div></div>`;
-  }
-  const r = state.clarifyResult;
-  if (!r) return '';
-  if (r.status === 'clear') {
-    return `<div class="clarify-panel ok"><span class="clarify-icon">✓</span><div class="clarify-body"><strong>Your brief is clear.</strong> Ready to submit.</div></div>`;
-  }
-  if (r.status === 'needs_clarification') {
-    const issues = (r.issues || []).map(i => `<li>${esc(i)}</li>`).join('');
-    const draftKws = (r.draft && Array.isArray(r.draft.keywords)) ? r.draft.keywords : [];
-    const questions = (r.questions || []).map(q => `<li>${esc(q)}</li>`).join('');
-    return `
-      <div class="clarify-panel suggest">
-        <span class="clarify-icon">💡</span>
-        <div class="clarify-body">
-          <h4>I made some assumptions — did you mean this?</h4>
-          ${issues ? `<ul>${issues}</ul>` : ''}
-          <span class="clarify-label">Suggested keywords (edit if needed)</span>
-          <textarea id="clarify-keywords" rows="4">${esc(draftKws.join('\n'))}</textarea>
-          ${questions ? `<div class="clarify-questions"><strong>Questions to refine the search (optional — answer in "Specific direction" on step 3):</strong><ul style="margin:0;padding-left:18px;">${questions}</ul></div>` : ''}
-        </div>
-      </div>
-    `;
-  }
-  if (r.status === 'unsalvageable') {
-    const examples = (r.examples || []).map(ex => `<li><code>${esc(ex.input)}</code> — ${esc(ex.why)}</li>`).join('');
-    return `
-      <div class="clarify-panel blocked">
-        <span class="clarify-icon">⚠</span>
-        <div class="clarify-body">
-          <h4>I can't process this brief yet</h4>
-          <p>${esc(r.reason || 'Input was too sparse or noisy.')}</p>
-          ${examples ? `<p><strong>Examples that work:</strong></p><ul>${examples}</ul>` : ''}
-          <p style="color:var(--ink-3);font-size:12px;">Click ← Back to refine the brief, then return here.</p>
-        </div>
-      </div>
-    `;
-  }
-  return '';
-}
-
-function renderClarifyActions() {
-  const r = state.clarifyResult;
-  const status = r && r.status;
-  if (status === 'unsalvageable') {
-    return `
-      <div class="panel-actions">
-        <button class="btn" id="btn-back">← Back to edit brief</button>
-      </div>
-    `;
-  }
-  if (status === 'needs_clarification') {
-    return `
-      <div class="panel-actions">
-        <button class="btn" id="btn-back">← Back to edit</button>
-        <button class="btn" id="btn-override" title="Submit your original input as-is. The pipeline cleaner will still try to tidy it up as a safety net.">Submit my original anyway</button>
-        <button class="btn primary" id="btn-use-suggested" title="Use the suggested keywords (you can edit them above first), then submit.">✓ Use suggested & submit</button>
-      </div>
-    `;
-  }
-  // clear OR loading — show standard buttons
-  return `
-    <div class="panel-actions">
-      <button class="btn" id="btn-back">← Back</button>
-      <button class="btn" id="btn-preview">Run pre-flight (1 query, 5 samples)</button>
-      <button class="btn primary" id="btn-submit">Submit & start full sourcing</button>
-    </div>
-  `;
-}
-
-function wireClarifyActions() {
-  const r = state.clarifyResult;
-  const status = r && r.status;
-  const submit = document.getElementById('btn-submit');
-  if (submit) submit.addEventListener('click', () => submitWizard(false, status === 'clear'));
-  const preview = document.getElementById('btn-preview');
-  if (preview) preview.addEventListener('click', () => submitWizard(true, status === 'clear'));
-  const useSugg = document.getElementById('btn-use-suggested');
-  if (useSugg) useSugg.addEventListener('click', () => useSuggestedAndSubmit());
-  const override = document.getElementById('btn-override');
-  if (override) override.addEventListener('click', () => submitWizard(false, false));
-}
-
-async function runClarify() {
-  const d = state.draft;
-  const reqId = ++state.clarifyReqId;
-  state.clarifyLoading = true;
-  state.clarifyResult = null;
-  // Re-render to show the loading panel immediately
-  if (state.step === 4) renderStep4();
-  try {
-    const payload = {
-      title:    (d.roles[0] && d.roles[0].title) || d.domain || '',
-      domain:   d.domain.startsWith('Other') ? d.customDomain : d.domain,
-      keywords: d.keywords,
-      roles:    d.roles,
-      must:     d.must,
-      should:   d.should,
-      mustNot:  d.mustNot,
-      geo:      d.location,
-    };
-    const result = await api('POST', '/api/briefs/clarify', payload);
-    if (reqId !== state.clarifyReqId) return; // a newer request superseded
-    state.clarifyResult = result;
-  } catch (e) {
-    if (reqId !== state.clarifyReqId) return;
-    // On clarify failure, don't block — fall through to "clear" so operator can submit
-    state.clarifyResult = { status: 'clear', _err: e.message };
-  } finally {
-    if (reqId === state.clarifyReqId) {
-      state.clarifyLoading = false;
-      if (state.step === 4) renderStep4();
-    }
-  }
-}
-
-function useSuggestedAndSubmit() {
-  // Read the (possibly edited) suggested keywords from the textarea, replace
-  // the draft's keywords, then submit with confirmedClean=true so the pipeline
-  // skips its own auto-cleaner (the operator already engaged with the suggestion).
-  const ta = document.getElementById('clarify-keywords');
-  if (ta) {
-    const cleaned = ta.value.split('\n').map(s => s.trim()).filter(Boolean);
-    if (cleaned.length === 0) {
-      toast('At least one keyword is required.', 'error');
-      return;
-    }
-    state.draft.keywords = cleaned.join('\n');
-  }
-  submitWizard(false, true);
-}
-
-async function submitWizard(preview, confirmedClean) {
-  const d = state.draft;
-  const allButtons = ['btn-submit', 'btn-preview', 'btn-use-suggested', 'btn-override'].map(id => document.getElementById(id)).filter(Boolean);
-  allButtons.forEach(b => { b.disabled = true; });
-  const btnSubmit  = document.getElementById('btn-submit');
-  const btnPreview = document.getElementById('btn-preview');
-  const btnUse     = document.getElementById('btn-use-suggested');
-  if (preview && btnPreview)  btnPreview.textContent = 'Running pre-flight…';
-  if (!preview && btnSubmit)  btnSubmit.textContent = 'Submitting…';
-  if (!preview && btnUse)     btnUse.textContent = 'Submitting…';
-  try {
-    const titleParts = [];
-    if (d.roles.length && d.roles[0].title) titleParts.push(d.roles.map(r => r.title).filter(Boolean).slice(0, 2).join(' + '));
-    titleParts.push(d.domain.startsWith('Other') ? d.customDomain : d.domain);
-    const title = titleParts.filter(Boolean).join(' — ') + (d.searchMode === 'niche' ? ' [Niche]' : '');
-
-    const payload = {
-      title,
-      domain: d.domain.startsWith('Other') ? d.customDomain : d.domain,
-      geo: d.location,
-      deadline: d.deadline,
-      outputFormat: d.outputFormat,
-      roles: d.roles,
-      keywords: d.keywords,
-      must: d.must,
-      should: d.should,
-      mustNot: d.mustNot,
-      clientCompany: d.clientCompany,
-      clientPrincipal: d.clientPrincipal,
-      customExclusions: d.customExclusions,
-      searchMode: d.searchMode,
-      advanced: d.advanced,
-      steering: d.steering,
-      operator: { name: d.operatorName, email: d.operatorEmail },
-      // v3.6: signals to the pipeline that the operator already engaged with
-      // the clarify-endpoint diagnostic and chose to proceed. Pipeline skips
-      // its own keyword auto-cleaner (no double-Haiku cost).
-      confirmedClean: !!confirmedClean,
-    };
-    const r = await api('POST', '/api/briefs', payload);
-    if (preview) {
-      // Trigger preview run on the same brief
-      await api('POST', '/api/briefs/' + encodeURIComponent(r.brief.id) + '/preview');
-    }
-    await loadBriefs();
-    state.activeBriefId = r.brief.id;
-    state.view = 'detail';
-    state.step = 1; state.draft = defaultDraft();
-    startPolling();
-    renderMain(); renderSidebar();
-    toast(preview ? 'Pre-flight running — 5 samples coming.' : 'Brief submitted — full pipeline running.', 'success');
-  } catch (e) {
-    toast(e.message, 'error');
-    if (btnSubmit) { btnSubmit.disabled = false; btnSubmit.textContent = 'Submit & start full sourcing'; }
-    if (btnPreview) { btnPreview.disabled = false; btnPreview.textContent = 'Run pre-flight (1 query, 5 samples)'; }
-  }
-}
 
 /* ============================================================ */
 /* DETAIL                                                       */
@@ -2985,11 +2296,9 @@ function toast(msg, kind) {
 /* ============================================================ */
 (async function init() {
   // v3.13.0 — hydrate persistent operator BEFORE render so the header chip
-  // and the chat/wizard skip-step logic see the right state on first paint.
+  // and the chat skip-step logic see the right state on first paint.
   state.operator = loadOperator();
   if (state.operator) {
-    state.draft.operatorName  = state.operator.name;
-    state.draft.operatorEmail = state.operator.email;
     state.chatOpName  = state.operator.name;
     state.chatOpEmail = state.operator.email;
   }

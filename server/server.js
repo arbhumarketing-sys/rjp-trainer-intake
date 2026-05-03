@@ -72,18 +72,18 @@ app.get('/healthz', (req, res) => {
   res.json({
     ok: true,
     ts: new Date().toISOString(),
-    version: '3.23.0',
+    version: '3.24.0',
     uptimeSec: Math.round((Date.now() - _bootedAt) / 1000),
     storage: process.env.DATABASE_URL ? 'postgres' : 'filesystem',
     dirty,
     llm: process.env.ANTHROPIC_VIA_CLAUDE_CLI === 'true' ? 'claude-cli' : (process.env.ANTHROPIC_API_KEY ? 'api' : 'disabled'),
     cliQueue,
     perplexity: { configured: hasPerplexity() },
-    apify: apifyPool.status(),  // v3.23.0 — per-account pool balances (cached, refresh in background)
+    apify: apifyPool.status(),  // v3.24.0 — per-account pool balances (cached, refresh in background)
   });
 });
 
-// v3.23.0 — auth disabled (internal-only URL); /api/auth/login endpoint removed
+// v3.24.0 — auth disabled (internal-only URL); /api/auth/login endpoint removed
 
 /* ---------- Briefs ---------- */
 app.get('/api/briefs', auth.requireAuth, (req, res) => {
@@ -383,12 +383,12 @@ app.get('/api/briefs/:id/output', auth.requireAuth, async (req, res) => {
   fs.createReadStream(resolved).pipe(res);
 });
 
-// v3.23.0 — Admin endpoints removed (Admin tab gone; 0 persistent exclusions
+// v3.24.0 — Admin endpoints removed (Admin tab gone; 0 persistent exclusions
 // + 1 feature-request total ever, no UI consumed them). store.js retains the
 // Postgres-backed helpers so historical rows stay readable if ever needed,
 // just no HTTP surface anymore.
 
-/* ---------- Client lifecycle status (v3.23.0) ----------
+/* ---------- Client lifecycle status (v3.24.0) ----------
    PATCH /api/briefs/:id/client-status   { clientStatus, note? }
    Tracks the post-pipeline workflow: pending (default) → shared_with_client →
    candidate_booked / client_rejected / done_no_booking. Pipeline `status` stays
@@ -458,7 +458,7 @@ app.post('/api/briefs/:id/scores', auth.requireAuth, async (req, res) => {
   }
 });
 
-/* ---------- Candidate outreach (v3.23.0) ----------
+/* ---------- Candidate outreach (v3.24.0) ----------
    GET    /api/briefs/:id/outreach
    POST   /api/briefs/:id/outreach   { candidateUrl, candidateName, status, note?, by? }
    DELETE /api/briefs/:id/outreach   body or query: { candidateUrl }
@@ -544,7 +544,7 @@ app.use((err, req, res, next) => {
   reapOrphansOnBoot();
 
   app.listen(PORT, () => {
-    console.log(`RJP Sourcing Portal v3.23.0 listening on :${PORT}`);
+    console.log(`RJP Sourcing Portal v3.24.0 listening on :${PORT}`);
     console.log(`  Apify Google actor:   ${process.env.APIFY_GOOGLE_ACTOR || process.env.APIFY_ACTOR || 'apify~rag-web-browser'}`);
     console.log(`  Apify LinkedIn actor: ${process.env.APIFY_LINKEDIN_ACTOR || 'harvestapi/linkedin-profile-scraper'}`);
     console.log(`  LLM client:           ${process.env.ANTHROPIC_VIA_CLAUDE_CLI === 'true' ? 'claude CLI subprocess (Max plan)' : (process.env.ANTHROPIC_API_KEY ? 'API key' : 'DISABLED')}`);
