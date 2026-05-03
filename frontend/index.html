@@ -766,7 +766,87 @@ let state = {
   chatAnswers: {},           // { questionId: choiceId | [choiceId, ...] }
   chatOpName: '',
   chatOpEmail: '',
+  // v3.13.0 — persistent operator identity. Hydrated on boot from localStorage
+  // key 'rjp_operator'. When present, the wizard's Step 1 and the chat-flow's
+  // Step 4 name+email inputs are hidden — submission auto-uses this identity.
+  // Header chip shows "Submitting as <name>" with a Switch link to clear.
+  operator: null,            // { name, email } or null
 };
+
+/* v3.13.0 — operator identity helpers (localStorage-backed). No real auth —
+   the portal is internal-only per Gulshan, but team members each get their
+   own attribution baked into the brief without re-typing every time. */
+const OP_KEY = 'rjp_operator';
+function loadOperator() {
+  try {
+    const raw = localStorage.getItem(OP_KEY);
+    if (!raw) return null;
+    const o = JSON.parse(raw);
+    if (o && typeof o.name === 'string' && typeof o.email === 'string' && o.name.trim() && o.email.trim()) return o;
+  } catch (_) {}
+  return null;
+}
+function saveOperator(name, email) {
+  const o = { name: String(name || '').trim().slice(0, 80), email: String(email || '').trim().slice(0, 120) };
+  if (!o.name || !o.email) return null;
+  localStorage.setItem(OP_KEY, JSON.stringify(o));
+  state.operator = o;
+  return o;
+}
+function clearOperator() {
+  localStorage.removeItem(OP_KEY);
+  state.operator = null;
+}
+
+/* v3.13.0 — first-visit identity prompt. Painless overlay; required to dismiss
+   so we always have an audit trail. Re-shown when the user clicks Switch. */
+function showWelcomeModal() {
+  const existing = document.getElementById('welcome-modal');
+  if (existing) existing.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'welcome-modal';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,0.55);display:flex;align-items:center;justify-content:center;z-index:9999;';
+  overlay.innerHTML = `
+    <div style="background:#fff;border-radius:8px;padding:28px 30px;max-width:440px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+      <h2 style="margin:0 0 6px 0;font-size:20px;">Welcome to the Trainer Sourcing Portal</h2>
+      <p style="margin:0 0 18px 0;color:#475569;font-size:13.5px;">Tell us who you are once. We'll attribute every brief you submit to this identity — no need to re-type your name and email each time.</p>
+      <div style="margin-bottom:12px;">
+        <label style="display:block;font-size:12px;font-weight:600;color:#1e293b;margin-bottom:4px;">Your name</label>
+        <input id="wm-name" placeholder="e.g. Rakhi Dev" style="width:100%;padding:8px 10px;border:1px solid #cbd5e1;border-radius:4px;font-size:14px;" />
+      </div>
+      <div style="margin-bottom:18px;">
+        <label style="display:block;font-size:12px;font-weight:600;color:#1e293b;margin-bottom:4px;">Your email</label>
+        <input id="wm-email" type="email" placeholder="you@rjpinfotek.com" style="width:100%;padding:8px 10px;border:1px solid #cbd5e1;border-radius:4px;font-size:14px;" />
+      </div>
+      <div id="wm-err" style="color:#b91c1c;font-size:12px;margin-bottom:10px;display:none;"></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;">
+        <button id="wm-save" style="background:#2563eb;color:#fff;border:none;padding:9px 18px;border-radius:4px;font-weight:600;font-size:13.5px;cursor:pointer;">Save & continue →</button>
+      </div>
+      <div style="margin-top:14px;font-size:11px;color:#94a3b8;">Stored locally in your browser. Click Switch in the header to change later.</div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  setTimeout(() => document.getElementById('wm-name').focus(), 50);
+  const submit = () => {
+    const name = document.getElementById('wm-name').value.trim();
+    const email = document.getElementById('wm-email').value.trim();
+    const err = document.getElementById('wm-err');
+    if (!name) { err.textContent = 'Please enter your name.'; err.style.display = 'block'; return; }
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { err.textContent = 'Please enter a valid email address.'; err.style.display = 'block'; return; }
+    saveOperator(name, email);
+    state.draft.operatorName = name;
+    state.draft.operatorEmail = email;
+    state.chatOpName = name;
+    state.chatOpEmail = email;
+    overlay.remove();
+    render();
+    toast('Identity saved. You won’t be asked again.', 'success');
+  };
+  document.getElementById('wm-save').addEventListener('click', submit);
+  ['wm-name', 'wm-email'].forEach(id => {
+    document.getElementById(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+  });
+}
 function defaultDraft() {
   return {
     operatorName: '', operatorEmail: '',
@@ -955,6 +1035,7 @@ function renderShell() {
       <div class="topbar-actions">
         <span class="topbar-clock" id="clock"></span>
         <span class="health-pill unknown" id="health-pill"><span class="dot"></span>Checking…</span>
+        ${state.operator ? `<span class="me-pill" title="Submitting briefs as this identity. Click Switch to change.">👤 ${esc(state.operator.name)} <a href="#" id="btn-switch-op" style="margin-left:6px;color:#1E40AF;text-decoration:underline;font-size:11px;">Switch</a></span>` : ''}
         <button class="btn ghost warm-btn" id="btn-warm" title="Click before a fresh brief if you haven't used the portal in 15+ minutes. Pre-warms the backend so your first submission is instant instead of waiting ~25s for the server to wake up. Safe to click any time; doesn't cost anything.">⚡ Warm up</button>
         <button class="btn ghost" id="btn-home">Repository</button>
         <button class="btn ghost" id="btn-admin">Admin</button>
@@ -972,6 +1053,20 @@ function renderShell() {
   `;
 }
 function wireShell() {
+  // v3.13.0 — Switch identity link in the header chip. Clears stored operator
+  // and re-shows the welcome modal so the next user can claim the session.
+  const switchBtn = document.getElementById('btn-switch-op');
+  if (switchBtn) switchBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    if (!confirm('Clear saved identity and switch user?')) return;
+    clearOperator();
+    state.draft.operatorName = '';
+    state.draft.operatorEmail = '';
+    state.chatOpName = '';
+    state.chatOpEmail = '';
+    render();
+    showWelcomeModal();
+  });
   document.getElementById('btn-home').addEventListener('click', () => { state.view = 'home'; state.activeBriefId = null; stopPolling(); renderMain(); renderSidebar(); });
   document.getElementById('btn-admin').addEventListener('click', async () => { state.view = 'admin'; state.activeBriefId = null; stopPolling(); await Promise.all([loadFeatureRequests(), loadPersistentExclusions()]); renderMain(); renderSidebar(); });
   document.getElementById('btn-new').addEventListener('click', () => {
@@ -1464,6 +1559,12 @@ function renderChatStep4() {
         </div>
       </div>
 
+      ${state.operator ? `
+      <div style="margin-top:14px;padding:10px 12px;background:#f1f5f9;border-radius:4px;font-size:12.5px;color:#334155;">
+        Submitting as <strong>${esc(state.operator.name)}</strong> · ${esc(state.operator.email)}
+        <a href="#" id="chat-switch-op" style="margin-left:8px;color:#1E40AF;text-decoration:underline;font-size:11.5px;">Switch</a>
+      </div>
+      ` : `
       <div class="field" style="margin-top:14px;">
         <label class="lbl">Operator name <span style="color:var(--ink-3);font-weight:400;font-size:11.5px;">— for the audit trail</span></label>
         <input id="chat-op-name" placeholder="e.g. your name" value="${esc(state.chatOpName || '')}" />
@@ -1471,7 +1572,7 @@ function renderChatStep4() {
       <div class="field">
         <label class="lbl">Operator email</label>
         <input id="chat-op-email" type="email" placeholder="you@rjpinfotek.com" value="${esc(state.chatOpEmail || '')}" />
-      </div>
+      </div>`}
 
       <div class="panel-actions">
         <button class="btn" id="btn-chat-back">← Back to questions</button>
@@ -1479,8 +1580,15 @@ function renderChatStep4() {
       </div>
     </div>
   `;
-  document.getElementById('chat-op-name').addEventListener('input', e => state.chatOpName = e.target.value);
-  document.getElementById('chat-op-email').addEventListener('input', e => state.chatOpEmail = e.target.value);
+  if (state.operator) {
+    state.chatOpName = state.operator.name;
+    state.chatOpEmail = state.operator.email;
+    const sw = document.getElementById('chat-switch-op');
+    if (sw) sw.addEventListener('click', (e) => { e.preventDefault(); if (confirm('Clear saved identity and switch user?')) { clearOperator(); render(); showWelcomeModal(); } });
+  } else {
+    document.getElementById('chat-op-name').addEventListener('input', e => state.chatOpName = e.target.value);
+    document.getElementById('chat-op-email').addEventListener('input', e => state.chatOpEmail = e.target.value);
+  }
   document.getElementById('btn-chat-back').addEventListener('click', () => {
     state.chatStep = state.chatQuestions.length ? 3 : 2;
     renderChat(document.getElementById('main'));
@@ -1493,6 +1601,10 @@ async function chatHandleSubmit() {
   const email = (state.chatOpEmail || '').trim();
   if (!name) { toast('Please enter operator name.', 'error'); return; }
   if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { toast('Please enter a valid email.', 'error'); return; }
+
+  // v3.13.0 — first chat-submit also captures identity for future briefs.
+  // No-op if a stored operator already matches; harmless overwrite otherwise.
+  saveOperator(name, email);
 
   const p = state.chatParsed || {};
   const clarifyBlock = chatBuildClarifyingBlock();
@@ -1758,13 +1870,22 @@ function wireNav() {
   });
 }
 
-/* Step 1 — operator */
+/* Step 1 — operator. v3.13.0: when a stored operator identity exists, skip
+   this step entirely and jump straight to Step 2 — the wizard inherits the
+   header chip's identity. Only renders when the operator has not been
+   captured yet, which on a fresh browser also triggers showWelcomeModal(). */
 function renderStep1() {
   const d = state.draft;
+  if (state.operator) {
+    d.operatorName = state.operator.name;
+    d.operatorEmail = state.operator.email;
+    state.step = 2;
+    return renderWizard(document.getElementById('main'));
+  }
   document.getElementById('wizard-body').innerHTML = `
     <div class="panel">
       <h3>Who's submitting this?</h3>
-      <div class="panel-sub">We use this to label the brief in the repository and on the output file.</div>
+      <div class="panel-sub">We use this to label the brief in the repository and on the output file. We'll save it so you don't have to type it again.</div>
 
       <div class="field">
         <label class="lbl">Your name</label>
@@ -1790,6 +1911,7 @@ function renderStep1() {
     if (!ok) return;
     state.draft.operatorName = name;
     state.draft.operatorEmail = email;
+    saveOperator(name, email);  // v3.13.0 — capture once, keep forever
     state.step = 2;
     renderWizard(document.getElementById('main'));
   });
@@ -2686,10 +2808,25 @@ function toast(msg, kind) {
 /* BOOT                                                         */
 /* ============================================================ */
 (async function init() {
+  // v3.13.0 — hydrate persistent operator BEFORE render so the header chip
+  // and the chat/wizard skip-step logic see the right state on first paint.
+  state.operator = loadOperator();
+  if (state.operator) {
+    state.draft.operatorName  = state.operator.name;
+    state.draft.operatorEmail = state.operator.email;
+    state.chatOpName  = state.operator.name;
+    state.chatOpEmail = state.operator.email;
+  }
+
   if (state.token) {
     try { await loadBriefs(); } catch (e) {}
   }
   render();
+
+  // First-visit welcome modal — only when no stored identity AND we're not
+  // mid-deep-link to a specific brief (avoid overlay-on-top-of-context).
+  if (!state.operator) showWelcomeModal();
+
   // Fire-and-forget — backend warmth check runs in parallel with first render
   // so the user sees the UI immediately and the pill updates a moment later.
   checkBackend();
