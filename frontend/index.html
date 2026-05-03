@@ -228,6 +228,67 @@
   }
   .empty-side a { color: #1e40af; text-decoration: underline; }
 
+  /* v3.26.0 — source toggles in chat Step 2 */
+  .src-panel {
+    border: 1px solid var(--line); border-radius: 6px;
+    padding: 10px 14px; background: #fafbfc;
+  }
+  .src-panel summary {
+    cursor: pointer; list-style: none; display: flex; justify-content: space-between;
+    align-items: center; gap: 12px; user-select: none;
+  }
+  .src-panel summary::-webkit-details-marker { display: none; }
+  .src-panel summary::before {
+    content: '▸'; color: var(--ink-3); font-size: 11px; transition: transform 0.15s;
+  }
+  .src-panel[open] summary::before { transform: rotate(90deg); }
+  .src-summary-label { font-size: 13px; font-weight: 600; color: var(--ink); flex: 1; }
+  .src-summary-count { font-size: 11.5px; color: var(--ink-3); font-weight: 400; }
+  .src-list {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px;
+    margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line);
+  }
+  .src-row {
+    display: flex; align-items: flex-start; gap: 8px; padding: 6px 4px;
+    cursor: pointer; border-radius: 4px;
+  }
+  .src-row:hover { background: rgba(37, 99, 235, 0.04); }
+  .src-row.disabled { cursor: not-allowed; opacity: 0.65; }
+  .src-row input[type="checkbox"] { margin-top: 2px; flex-shrink: 0; }
+  .src-label { display: flex; flex-direction: column; flex: 1; }
+  .src-name { font-size: 12.5px; font-weight: 500; color: var(--ink); }
+  .src-sub { font-size: 11px; color: var(--ink-3); margin-top: 1px; }
+  .src-status {
+    font-size: 10.5px; padding: 2px 6px; border-radius: 9px; align-self: flex-start;
+    font-weight: 600;
+  }
+  .src-status.ok      { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
+  .src-status.pending { background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; }
+
+  /* v3.26.0 — loading meter for chat-flow transitions */
+  .loading-meter { margin-top: 14px; padding: 10px 12px; background: #f8fafc; border-radius: 6px; border: 1px solid var(--line); }
+  .loading-meter-bar {
+    height: 6px; background: #e2e8f0; border-radius: 3px; overflow: hidden;
+  }
+  .loading-meter-fill {
+    height: 100%; background: linear-gradient(90deg, #2563eb, #3b82f6);
+    border-radius: 3px; width: 0%;
+    animation: loadFill var(--est-time, 6s) cubic-bezier(.18,.89,.32,1) forwards;
+  }
+  @keyframes loadFill {
+    0%   { width: 0%; }
+    50%  { width: 65%; }
+    80%  { width: 85%; }
+    100% { width: 95%; }
+  }
+  .loading-meter-label {
+    text-align: center; font-size: 12px; color: #475569; margin-top: 8px;
+  }
+  .loading-meter-eta {
+    color: #94a3b8; font-size: 11px; margin-left: 4px;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+
   /* v3.18.0 — outreach dropdown */
   .outreach-sel {
     padding: 3px 6px; border: 1px solid var(--line); border-radius: 4px;
@@ -781,6 +842,30 @@ const DOMAIN_OPTIONS = [
 // v3.24.0 — LOCATIONS + OUTPUT_OPTIONS removed (wizard-only constants;
 // chat flow asks location as a clarifying question and only ever builds .xlsx)
 
+// v3.26.0 — search source toggles. Each entry is an Apify Google query family
+// the pipeline runs in Phase 2. Operator can disable individual sources from
+// chat Step 2 if they're known-noisy for a domain. Perplexity is shown but
+// disabled until PERPLEXITY_API_KEY lands on Render.
+const SOURCE_OPTIONS = [
+  { key: 'linkedin',             label: 'LinkedIn profiles',   sub: 'site:linkedin.com/in', defaultOn: true,  needsKey: false },
+  { key: 'urbanpro',             label: 'UrbanPro / Sulekha',  sub: 'Indian trainer marketplaces', defaultOn: true, needsKey: false },
+  { key: 'youtube',              label: 'YouTube tutorials',   sub: 'site:youtube.com', defaultOn: true,  needsKey: false },
+  { key: 'udemy',                label: 'Udemy courses',       sub: 'site:udemy.com',   defaultOn: true,  needsKey: false },
+  { key: 'blogs',                label: 'Tech blogs',          sub: 'Medium, dev.to, Hashnode, Substack', defaultOn: true, needsKey: false },
+  { key: 'indianPlatforms',      label: 'Indian platforms',    sub: 'Edureka, Simplilearn, GreatLearning, UpGrad, AnalyticsVidhya, Whizlabs, KodeKloud', defaultOn: true, needsKey: false },
+  { key: 'authorityDirectories', label: 'Authority directories', sub: 'MS MVP, Google GDE, AWS Hero, Salesforce Trailblazer, CNCF', defaultOn: true, needsKey: false },
+  { key: 'coursePlatforms',      label: 'Course platforms',    sub: "Coursera, Pluralsight, LinkedIn Learning, O'Reilly", defaultOn: true, needsKey: false },
+  { key: 'meetup',               label: 'Meetup organizers',   sub: 'site:meetup.com',     defaultOn: true, needsKey: false },
+  { key: 'eventbrite',           label: 'Eventbrite hosts',    sub: 'site:eventbrite.com', defaultOn: true, needsKey: false },
+  { key: 'github',               label: 'GitHub edu repos',    sub: 'site:github.com',     defaultOn: true, needsKey: false },
+  { key: 'perplexity',           label: 'Perplexity (Sonar Pro)', sub: 'Live-web named-trainer probe (Phase 1.2)', defaultOn: true, needsKey: true },
+];
+function defaultSourceMap() {
+  const out = {};
+  for (const s of SOURCE_OPTIONS) out[s.key] = s.defaultOn;
+  return out;
+}
+
 /* ============================================================ */
 /* STATE                                                        */
 /* ============================================================ */
@@ -800,6 +885,9 @@ let state = {
   backendDirty: null,        // { briefs, featureRequests } from /healthz
   backendCheckedAt: null,    // ms timestamp
   healthTimer: null,
+  // v3.26.0 — Perplexity configured-flag (mirrors /healthz perplexity.configured).
+  // Drives the active/disabled state of the Perplexity source toggle in chat Step 2.
+  perplexityConfigured: false,
   // v3.24.0 — clarify state was wizard-only; removed
   // v3.9.0 — candidate scoring cache. { briefId: { candidateUrl: 'selected'|'hold'|'rejected' } }
   candidateScores: {},
@@ -1086,6 +1174,8 @@ async function checkBackend() {
     state.backendUptime = data.uptimeSec || null;
     state.backendDirty = data.dirty || null;
     state.backendCheckedAt = Date.now();
+    // v3.26.0 — capture Perplexity configured-flag for Step 2 source toggles
+    state.perplexityConfigured = !!(data.perplexity && data.perplexity.configured);
     return state.backendStatus;
   } catch (e) {
     state.backendStatus = 'cold';
@@ -1613,9 +1703,15 @@ function renderChatStep1() {
       </div>
     </div>
   `;
+  // v3.26.0 — show loading meter under the panel when parsing is in flight
+  if (state.chatLoading) {
+    body.insertAdjacentHTML('beforeend', renderLoadingMeter('Parsing your brief…', 6));
+  }
   const ta = document.getElementById('chat-input');
-  ta.addEventListener('input', e => { state.chatInput = e.target.value; saveChatDraft(); });
-  ta.focus();
+  if (ta) {
+    ta.addEventListener('input', e => { state.chatInput = e.target.value; saveChatDraft(); });
+    if (!state.chatLoading) ta.focus();
+  }
   document.getElementById('btn-chat-send').addEventListener('click', chatHandleSend);
 }
 
@@ -1628,6 +1724,8 @@ async function chatHandleSend() {
   try {
     const r = await api('POST', '/api/briefs/parse', { text });
     state.chatParsed = r.parsed || {};
+    // v3.26.0 — initialize source toggles to all-default-on (operator can flip in Step 2)
+    if (!state.chatParsed.sources) state.chatParsed.sources = defaultSourceMap();
     saveChatDraft();  // v3.14.0 — persist parse result so reload doesn't burn a Haiku call
     // Default mode if not set
     if (!state.chatParsed.searchMode) state.chatParsed.searchMode = 'std';
@@ -1639,6 +1737,18 @@ async function chatHandleSend() {
     toast('Parse failed: ' + e.message, 'error');
     renderChatStep1();
   }
+}
+
+// v3.26.0 — loading meter. Shows a fill-bar that animates over the estimated
+// time so the operator has visual feedback that something is happening.
+// Bar caps at 95% (never claims "done" before the API actually returns).
+function renderLoadingMeter(label, estSeconds) {
+  return `
+    <div class="loading-meter" style="--est-time:${estSeconds}s;">
+      <div class="loading-meter-bar"><div class="loading-meter-fill"></div></div>
+      <div class="loading-meter-label">${esc(label)} <span class="loading-meter-eta">~${estSeconds}s</span></div>
+    </div>
+  `;
 }
 
 function chatArrToLines(arr) {
@@ -1654,6 +1764,25 @@ function renderChatStep2() {
   const p = state.chatParsed || {};
   // Suggest a domain if missing — derive from first keyword
   const suggestedDomain = p.domain || (Array.isArray(p.keywords) && p.keywords[0]) || '';
+  // v3.26.0 — source toggles UI
+  const sources = p.sources || defaultSourceMap();
+  const activeSources = SOURCE_OPTIONS.filter(s => sources[s.key] && (!s.needsKey || state.perplexityConfigured));
+  const sourcesSummary = `${activeSources.length} of ${SOURCE_OPTIONS.length} sources enabled${state.perplexityConfigured ? '' : ' (Perplexity awaiting API key)'}`;
+  const sourceCheckboxes = SOURCE_OPTIONS.map(s => {
+    const isOn = !!sources[s.key];
+    const disabled = s.needsKey && !state.perplexityConfigured;
+    return `
+      <label class="src-row ${disabled ? 'disabled' : ''}" title="${esc(s.sub)}">
+        <input type="checkbox" data-src="${esc(s.key)}" ${isOn && !disabled ? 'checked' : ''} ${disabled ? 'disabled' : ''} />
+        <span class="src-label">
+          <span class="src-name">${esc(s.label)}</span>
+          <span class="src-sub">${esc(s.sub)}</span>
+        </span>
+        ${s.needsKey ? `<span class="src-status ${state.perplexityConfigured ? 'ok' : 'pending'}">${state.perplexityConfigured ? '✓ Active' : '🔒 Awaiting API key'}</span>` : ''}
+      </label>
+    `;
+  }).join('');
+
   document.getElementById('chat-body').innerHTML = `
     <div class="panel">
       <div class="parsed-card">
@@ -1673,12 +1802,34 @@ function renderChatStep2() {
           <div class="pf-label">Custom exclusions</div><div><textarea id="cp-customex" rows="2" placeholder="One per line. Big-firm list (TCS/Wipro/etc.) is auto-applied.">${esc(chatArrToLines(p.customExclusions))}</textarea></div>
         </div>
       </div>
+
+      <details class="src-panel" style="margin-top:12px;">
+        <summary>
+          <span class="src-summary-label">Search sources</span>
+          <span class="src-summary-count">${esc(sourcesSummary)}</span>
+        </summary>
+        <div class="src-list">${sourceCheckboxes}</div>
+      </details>
+
       <div class="panel-actions">
         <button class="btn" id="btn-chat-back">← Back</button>
         <button class="btn primary" id="btn-chat-questions" ${state.chatLoading ? 'disabled' : ''}>${state.chatLoading ? 'Generating questions…' : 'Continue to follow-ups →'}</button>
       </div>
+      ${state.chatLoading ? renderLoadingMeter('Generating clarifying questions…', 10) : ''}
     </div>
   `;
+  // v3.26.0 — wire source-toggle checkboxes
+  document.querySelectorAll('.src-row input[type="checkbox"]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      state.chatParsed.sources = state.chatParsed.sources || defaultSourceMap();
+      state.chatParsed.sources[cb.dataset.src] = cb.checked;
+      // Update the summary count label inline without full re-render
+      const newActive = SOURCE_OPTIONS.filter(s => state.chatParsed.sources[s.key] && (!s.needsKey || state.perplexityConfigured)).length;
+      const lbl = document.querySelector('.src-summary-count');
+      if (lbl) lbl.textContent = `${newActive} of ${SOURCE_OPTIONS.length} sources enabled${state.perplexityConfigured ? '' : ' (Perplexity awaiting API key)'}`;
+      saveChatDraft();
+    });
+  });
   document.querySelectorAll('#cp-mode button').forEach(b => b.addEventListener('click', () => {
     state.chatParsed.searchMode = b.dataset.m;
     document.querySelectorAll('#cp-mode button').forEach(x => x.classList.toggle('on', x.dataset.m === state.chatParsed.searchMode));
@@ -1698,6 +1849,8 @@ function chatCollectStep2() {
   state.chatParsed.should   = chatLinesToArr(document.getElementById('cp-should').value);
   state.chatParsed.mustNot  = chatLinesToArr(document.getElementById('cp-mustnot').value);
   state.chatParsed.customExclusions = chatLinesToArr(document.getElementById('cp-customex').value);
+  // v3.26.0 — source toggles already updated live via change handlers; ensure default exists
+  if (!state.chatParsed.sources) state.chatParsed.sources = defaultSourceMap();
   saveChatDraft();  // v3.14.0
 }
 
@@ -1889,6 +2042,8 @@ async function chatHandleSubmit() {
       searchMode: p.searchMode === 'niche' ? 'niche' : 'std',
       steering: finalSteering,
       operator: { name, email },
+      // v3.26.0 — pass source toggles (operator-controlled in Step 2)
+      advanced: { sources: p.sources || defaultSourceMap() },
       // Chat flow already engaged the operator with question-driven refinement
       // — pipeline can skip its own auto-cleaner (no double-Haiku).
       confirmedClean: true,
