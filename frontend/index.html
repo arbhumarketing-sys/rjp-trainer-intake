@@ -84,6 +84,8 @@
     border-bottom: 1px solid var(--line);
     position: sticky; top: 0; z-index: 10;
   }
+  /* v3.21.0 — clickable logo + hover affordance */
+  #topbar-brand-link:hover { opacity: 0.7; }
   .topbar-brand {
     display: flex; align-items: center; gap: 12px;
     font-weight: 600; font-size: 14px;
@@ -1048,7 +1050,8 @@ function defaultDraft() {
     steering: '',
     outputFormat: 'xlsx',
     deadline: '',
-    quickIntake: '',                    // v3.1 — free-text one-liner intake
+    // quickIntake removed in v3.21.0 — Quick Intake feature retired in favor
+    // of the chat-flow's Step 1 (which does the same parse with better UX).
   };
 }
 
@@ -1204,7 +1207,7 @@ function render() {
 function renderShell() {
   return `
     <header class="topbar">
-      <div class="topbar-brand">
+      <div class="topbar-brand" id="topbar-brand-link" title="Go to home / repository" style="cursor:pointer;">
         <div class="login-mark">RJ</div>
         <span>Trainer Sourcing Portal</span>
         <span class="sub">· RJP Infotek</span>
@@ -1240,6 +1243,13 @@ function renderShell() {
   `;
 }
 function wireShell() {
+  // v3.21.0 — clickable brand → home (universal "click logo to go home" pattern)
+  const brand = document.getElementById('topbar-brand-link');
+  if (brand) brand.addEventListener('click', () => {
+    state.view = 'home'; state.activeBriefId = null; stopPolling();
+    renderMain(); renderSidebar();
+  });
+
   // v3.15.0 — sidebar search input + filter chips (debounced where helpful)
   const sb = document.getElementById('sb-search');
   if (sb) {
@@ -1971,6 +1981,10 @@ async function chatHandleSubmit() {
 }
 
 function renderHome(m) {
+  // v3.21.0 — Quick Intake removed. Chat flow now the only entry point;
+  // it provides the same one-liner intake on Step 1, plus inline review,
+  // refining questions, and one-click submit. Wizard is still reachable from
+  // the chat-flow's "advanced wizard" link for power users.
   m.innerHTML = `
     <div class="center">
       <div class="page-head">
@@ -1981,56 +1995,11 @@ function renderHome(m) {
         <h3>What this portal does</h3>
         <p style="margin:0 0 14px;color:var(--ink-2);font-size:13.5px;">Submit a brief — keywords, roles, location, exclusions, anything specific you want — and the sourcing pipeline runs automatically. Watch progress live, download the result as Excel when it's ready. Past briefs stay in the repository on the left.</p>
         <button class="btn primary" id="btn-home-new">+ New sourcing brief</button>
-
-        <div class="panel-collapsible" style="margin-top:18px;">
-          <div class="panel-collapsible-head"><h4>Quick intake — type a one-liner</h4><span style="color:var(--ink-3);font-size:11px;">Claude will parse it into a brief</span></div>
-          <div class="panel-collapsible-body" style="display:block;">
-            <div class="hint">Example: "10 Aurora PostgreSQL DBA trainers in India, exclude HCL Wipro, no speakers, by Friday."</div>
-            <div class="quick-intake">
-              <input id="quick-intake" placeholder='e.g. "5 Splunk Cloud Observability trainers, India, exclude TCS, niche"' />
-              <button class="btn primary" id="btn-quick-intake">Parse</button>
-            </div>
-            <div id="quick-intake-result" style="margin-top:8px;"></div>
-          </div>
-        </div>
       </div>
     </div>`;
   document.getElementById('btn-home-new').addEventListener('click', () => {
     // v3.10.0 — chat-style input is the default entry point
     state.view = 'chat'; chatReset(); renderMain();
-  });
-  document.getElementById('btn-quick-intake').addEventListener('click', async () => {
-    const text = document.getElementById('quick-intake').value.trim();
-    if (!text) return;
-    const out = document.getElementById('quick-intake-result');
-    out.innerHTML = '<div class="hint">Parsing…</div>';
-    try {
-      const r = await api('POST', '/api/briefs/parse', { text });
-      const p = r.parsed || {};
-      out.innerHTML = `
-        <div class="panel-sub" style="margin:0;">Parsed ${Object.keys(p).length} fields. Review on the wizard.</div>
-        <button class="btn primary" id="btn-use-parsed" style="margin-top:6px;">Open in wizard →</button>
-        <pre style="margin-top:8px;font-size:11px;background:var(--bg);padding:10px;border-radius:4px;max-height:200px;overflow:auto;">${esc(JSON.stringify(p, null, 2))}</pre>
-      `;
-      document.getElementById('btn-use-parsed').addEventListener('click', () => {
-        state.draft = Object.assign(defaultDraft(), {
-          domain: p.title || (Array.isArray(p.keywords) ? p.keywords[0] : '') || '',
-          keywords: Array.isArray(p.keywords) ? p.keywords.join('\n') : '',
-          must: Array.isArray(p.must) ? p.must.join('\n') : '',
-          should: Array.isArray(p.should) ? p.should.join('\n') : '',
-          mustNot: Array.isArray(p.mustNot) ? p.mustNot.join('\n') : '',
-          clientCompany: p.clientCompany || '',
-          customExclusions: Array.isArray(p.customExclusions) ? p.customExclusions.join('\n') : '',
-          searchMode: p.searchMode === 'niche' ? 'niche' : 'std',
-          deadline: p.deadline || '',
-          steering: p.notes || text,
-          quickIntake: text,
-        });
-        state.view = 'new'; state.step = 1; renderMain();
-      });
-    } catch (e) {
-      out.innerHTML = `<div class="hint" style="color:var(--bad);">${esc(e.message)}</div>`;
-    }
   });
 }
 
