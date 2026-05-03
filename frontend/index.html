@@ -226,6 +226,20 @@
   }
   .empty-side a { color: #1e40af; text-decoration: underline; }
 
+  /* v3.17.0 — client-lifecycle status chips */
+  .cs-chip {
+    display: inline-block; padding: 2px 8px; border-radius: 10px;
+    font-size: 10.5px; font-weight: 600; line-height: 1.5; letter-spacing: 0.02em;
+    text-transform: uppercase; border: 1px solid transparent;
+  }
+  .cs-pending            { background: #f1f5f9; color: #475569; border-color: #cbd5e1; }
+  .cs-shared_with_client { background: #dbeafe; color: #1e40af; border-color: #93c5fd; }
+  .cs-candidate_booked   { background: #dcfce7; color: #166534; border-color: #86efac; }
+  .cs-client_rejected    { background: #fee2e2; color: #b91c1c; border-color: #fca5a5; }
+  .cs-done_no_booking    { background: #f5f5f4; color: #57534e; border-color: #d6d3d1; }
+  .cs-select { padding: 5px 8px; border: 1px solid var(--line); border-radius: 4px; font-size: 12px; background: #fff; }
+  .cs-mini   { font-size: 9px; padding: 1px 5px; border-radius: 8px; margin-left: 4px; vertical-align: middle; }
+
   /* v3.16.0 — cost breakdown strip on detail view */
   .cost-breakdown {
     margin-top: 6px; padding: 8px 12px; background: #f8fafc;
@@ -869,6 +883,40 @@ function clearChatDraft() {
   try { localStorage.removeItem(CHAT_DRAFT_KEY); } catch (_) {}
 }
 
+/* v3.17.0 — client lifecycle status helpers (display labels + dropdown). */
+const CLIENT_STATUS_LABELS = {
+  pending:            'Awaiting share',
+  shared_with_client: 'Shared with client',
+  candidate_booked:   'Candidate booked ✓',
+  client_rejected:    'Client rejected',
+  done_no_booking:    'Done — no booking',
+};
+function csLabel(v)   { return CLIENT_STATUS_LABELS[v] || v || 'Awaiting share'; }
+function csOptions(current) {
+  return Object.keys(CLIENT_STATUS_LABELS).map(k =>
+    `<option value="${k}" ${k === (current || 'pending') ? 'selected' : ''}>${esc(csLabel(k))}</option>`
+  ).join('');
+}
+async function setClientStatus(briefId, value) {
+  try {
+    await api('PATCH', '/api/briefs/' + encodeURIComponent(briefId) + '/client-status', {
+      clientStatus: value,
+      setBy: state.operator && state.operator.name ? state.operator.name : undefined,
+    });
+    // Optimistic local update so the UI doesn't wait for a full refetch
+    const local = state.briefs.find(x => x.id === briefId);
+    if (local) {
+      local.clientStatus = value;
+      local.clientStatusBy = state.operator && state.operator.name;
+      local.clientStatusAt = new Date().toISOString();
+    }
+    toast(`Status: ${csLabel(value)}`, 'success');
+    renderMain(); renderSidebar();
+  } catch (e) {
+    toast('Could not update status: ' + e.message, 'error');
+  }
+}
+
 /* v3.15.0 — sidebar filter state. Persisted across reloads so an operator
    who lives in "Mine + Running" doesn't have to re-set the filter every
    time. Filter is applied client-side against state.briefs. */
@@ -1433,11 +1481,14 @@ function renderSidebar() {
     const isActive = b.id === state.activeBriefId;
     const title = (b.title || '(untitled)').slice(0, 80);
     const sub = (b.domain || '—') + ' · ' + ((b.roles || []).length) + ' role' + ((b.roles || []).length === 1 ? '' : 's');
+    const csChip = (b.clientStatus && b.clientStatus !== 'pending')
+      ? `<span class="cs-chip cs-mini cs-${b.clientStatus}">${esc(csLabel(b.clientStatus))}</span>`
+      : '';
     return `<div class="brief-item ${isActive ? 'active' : ''}" data-id="${esc(b.id)}">
       <span class="brief-item-title">${esc(title)}</span>
       <span class="brief-item-meta">
         <span>${esc(sub)}</span>
-        <span class="status-pill status-${b.status || 'queued'}">${b.status || 'queued'}</span>
+        <span class="status-pill status-${b.status || 'queued'}">${b.status || 'queued'}</span>${csChip}
       </span>
     </div>`;
   }).join('');
@@ -2785,6 +2836,15 @@ function renderDetail(m) {
           <span class="meta-label">Cost</span>
           <span class="meta-val" style="color:#1e40af;font-family:ui-monospace,Menlo,monospace;">$${b.cost.total.toFixed(4)}</span>
         </div>` : ''}
+        ${(isComplete || b.clientStatus) ? `<div class="meta-cell">
+          <span class="meta-label">Client status</span>
+          <span class="meta-val">
+            <select id="cs-select" class="cs-select" data-bid="${esc(b.id)}">
+              ${csOptions(b.clientStatus || 'pending')}
+            </select>
+            ${b.clientStatusBy ? `<div style="font-size:10.5px;color:var(--ink-3);margin-top:3px;">by ${esc(b.clientStatusBy)} · ${esc((b.clientStatusAt || '').slice(0, 10))}</div>` : ''}
+          </span>
+        </div>` : ''}
       </div>
       ${b.cost ? `<div class="cost-breakdown">
         <strong>Cost breakdown</strong> &middot;
@@ -2920,6 +2980,10 @@ function renderDetail(m) {
       }
     });
   });
+
+  // v3.17.0 — client lifecycle status dropdown handler
+  const csSel = document.getElementById('cs-select');
+  if (csSel) csSel.addEventListener('change', (e) => setClientStatus(csSel.dataset.bid, e.target.value));
 
   const rtb = document.getElementById('btn-retry');
   if (rtb) rtb.addEventListener('click', async () => {

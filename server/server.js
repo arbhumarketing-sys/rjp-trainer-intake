@@ -71,7 +71,7 @@ app.get('/healthz', (req, res) => {
   res.json({
     ok: true,
     ts: new Date().toISOString(),
-    version: '3.16.0',
+    version: '3.17.0',
     uptimeSec: Math.round((Date.now() - _bootedAt) / 1000),
     storage: process.env.DATABASE_URL ? 'postgres' : 'filesystem',
     dirty,
@@ -462,6 +462,36 @@ app.delete('/api/persistent-exclusions/:id', auth.requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+/* ---------- Client lifecycle status (v3.17.0) ----------
+   PATCH /api/briefs/:id/client-status   { clientStatus, note? }
+   Tracks the post-pipeline workflow: pending (default) → shared_with_client →
+   candidate_booked / client_rejected / done_no_booking. Pipeline `status` stays
+   focused on engine state (queued/discovery/...complete); clientStatus tracks
+   the human workflow on top of a complete brief. */
+const CLIENT_STATUS_VALUES = ['pending', 'shared_with_client', 'candidate_booked', 'client_rejected', 'done_no_booking'];
+app.patch('/api/briefs/:id/client-status', auth.requireAuth, (req, res) => {
+  const b = store.get(req.params.id);
+  if (!b) return res.status(404).json({ error: 'not found' });
+  const body = req.body || {};
+  const cs = String(body.clientStatus || '').toLowerCase();
+  if (!CLIENT_STATUS_VALUES.includes(cs)) {
+    return res.status(400).json({ error: `clientStatus must be one of: ${CLIENT_STATUS_VALUES.join(', ')}` });
+  }
+  const note   = String(body.note   || '').slice(0, 1000);
+  const setBy  = String(body.setBy  || (req.user && req.user.team) || 'rjp-infotek').slice(0, 100);
+  const history = (b.clientStatusHistory || []).concat([{
+    clientStatus: cs, note, setBy, at: new Date().toISOString(),
+  }]).slice(-50);  // cap history length
+  store.update(req.params.id, {
+    clientStatus: cs,
+    clientStatusNote: note,
+    clientStatusBy: setBy,
+    clientStatusAt: new Date().toISOString(),
+    clientStatusHistory: history,
+  });
+  res.json({ ok: true, clientStatus: cs, history });
+});
+
 /* ---------- Candidate scoring (v3.10.1) ----------
    GET    /api/briefs/:id/scores         — list scores for this brief
    POST   /api/briefs/:id/scores         — { candidateUrl, candidateName, score: 'selected'|'hold'|'rejected', note?, scoredBy? }
@@ -546,7 +576,7 @@ app.use((err, req, res, next) => {
   reapOrphansOnBoot();
 
   app.listen(PORT, () => {
-    console.log(`RJP Sourcing Portal v3.16.0 listening on :${PORT}`);
+    console.log(`RJP Sourcing Portal v3.17.0 listening on :${PORT}`);
     console.log(`  Apify Google actor:   ${process.env.APIFY_GOOGLE_ACTOR || process.env.APIFY_ACTOR || 'apify~rag-web-browser'}`);
     console.log(`  Apify LinkedIn actor: ${process.env.APIFY_LINKEDIN_ACTOR || 'harvestapi/linkedin-profile-scraper'}`);
     console.log(`  LLM client:           ${process.env.ANTHROPIC_VIA_CLAUDE_CLI === 'true' ? 'claude CLI subprocess (Max plan)' : (process.env.ANTHROPIC_API_KEY ? 'API key' : 'DISABLED')}`);
