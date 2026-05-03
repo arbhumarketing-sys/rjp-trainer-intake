@@ -1216,8 +1216,6 @@ function renderShell() {
         <span class="topbar-clock" id="clock"></span>
         <span class="health-pill unknown" id="health-pill"><span class="dot"></span>Checking…</span>
         ${state.operator ? `<span class="me-pill" title="Submitting briefs as this identity. Click Switch to change.">👤 ${esc(state.operator.name)} <a href="#" id="btn-switch-op" style="margin-left:6px;color:#1E40AF;text-decoration:underline;font-size:11px;">Switch</a></span>` : ''}
-        <button class="btn ghost warm-btn" id="btn-warm" title="Click before a fresh brief if you haven't used the portal in 15+ minutes. Pre-warms the backend so your first submission is instant instead of waiting ~25s for the server to wake up. Safe to click any time; doesn't cost anything.">⚡ Warm up</button>
-        <button class="btn ghost" id="btn-home">Repository</button>
         <button class="btn ghost" id="btn-admin">Admin</button>
         <button class="btn primary" id="btn-new">+ New brief</button>
       </div>
@@ -1288,7 +1286,7 @@ function wireShell() {
     render();
     showWelcomeModal();
   });
-  document.getElementById('btn-home').addEventListener('click', () => { state.view = 'home'; state.activeBriefId = null; stopPolling(); renderMain(); renderSidebar(); });
+  // v3.22.0 — Repository button removed; logo click serves the same purpose
   document.getElementById('btn-admin').addEventListener('click', async () => { state.view = 'admin'; state.activeBriefId = null; stopPolling(); await Promise.all([loadFeatureRequests(), loadPersistentExclusions()]); renderMain(); renderSidebar(); });
   document.getElementById('btn-new').addEventListener('click', () => {
     // v3.14.0 — if there's an unsaved chat draft, offer to resume before
@@ -1317,18 +1315,7 @@ function wireShell() {
     state.view = 'chat'; chatReset();
     renderMain(); renderSidebar();
   });
-  document.getElementById('btn-warm').addEventListener('click', async () => {
-    const btn = document.getElementById('btn-warm');
-    btn.disabled = true;
-    const orig = btn.innerHTML;
-    btn.innerHTML = '<span class="spinner">⟳</span> Warming…';
-    const result = await checkBackend();
-    btn.disabled = false;
-    btn.innerHTML = orig;
-    if (result === 'warm')        toast('Backend is warm — submissions will be instant.', 'success');
-    else if (result === 'cold')   toast('Backend still unreachable. Wait ~30s and try Warm up again.', 'error');
-    else                          toast('Backend warming up. Submission will start within ~10-15s.', '');
-  });
+  // v3.22.0 — Warm-up button removed; the auto health-poll handles warming
   startClock();
 }
 
@@ -1993,14 +1980,11 @@ function renderHome(m) {
       </div>
       <div class="panel">
         <h3>What this portal does</h3>
-        <p style="margin:0 0 14px;color:var(--ink-2);font-size:13.5px;">Submit a brief — keywords, roles, location, exclusions, anything specific you want — and the sourcing pipeline runs automatically. Watch progress live, download the result as Excel when it's ready. Past briefs stay in the repository on the left.</p>
-        <button class="btn primary" id="btn-home-new">+ New sourcing brief</button>
+        <p style="margin:0;color:var(--ink-2);font-size:13.5px;">Submit a brief — keywords, location, exclusions, anything specific — and the sourcing pipeline runs automatically. Watch progress live, download the result as Excel when ready. Click <strong>+ New brief</strong> in the top-right to start. Past briefs stay in the repository on the left.</p>
       </div>
     </div>`;
-  document.getElementById('btn-home-new').addEventListener('click', () => {
-    // v3.10.0 — chat-style input is the default entry point
-    state.view = 'chat'; chatReset(); renderMain();
-  });
+  // v3.22.0 — duplicate "+ New sourcing brief" button removed; the header
+  // "+ New brief" button is always visible and serves the same purpose.
 }
 
 function renderAdmin(m) {
@@ -2900,9 +2884,11 @@ function renderDetail(m) {
         <span style="color:var(--ink-3);">&middot; Apify cost is estimated from rates; Claude cost is reported by the CLI.</span>
       </div>` : ''}
 
-      <div class="panel">
-        <h3>Pipeline progress</h3>
-        <div class="panel-sub">${isComplete ? 'Done.' : (status === 'failed' ? 'Stopped on error.' : 'Live — refreshes every 2.5 seconds.')}</div>
+      <details class="panel" ${(isComplete || status === 'failed') ? '' : 'open'}>
+        <summary style="cursor:pointer;list-style:none;">
+          <h3 style="display:inline-block;margin:0;">Pipeline progress</h3>
+          <span class="panel-sub" style="margin-left:10px;">${isComplete ? 'Done — click to expand log.' : (status === 'failed' ? 'Stopped on error — click to expand log.' : 'Live — refreshes every 2.5 seconds.')}</span>
+        </summary>
         ${(!isComplete && status !== 'failed' && (b.log || []).length) ? `
           <div class="now-doing">
             <div class="now-spin"></div>
@@ -2932,7 +2918,7 @@ function renderDetail(m) {
         <div class="log">${(b.log || []).map(l =>
           `<div><span class="ts">${esc((l.ts || '').slice(11, 19))}</span> <span class="${l.kind === 'err' ? 'err' : (l.kind === 'warn' ? 'err' : '')}">${esc(l.msg || '')}</span></div>`
         ).join('') || '<div><span class="ts">--:--:--</span> Waiting for first event…</div>'}</div>
-      </div>
+      </details>
 
       ${downloadHTML}
 
@@ -2943,11 +2929,14 @@ function renderDetail(m) {
           ${sampleTableHTML(sample.slice(0, 10), 'accept')}
         </div>
 
-        ${rejSample.length ? `<div class="panel" style="margin-top:14px;">
-          <h3>Rejected (audit sample)</h3>
-          <div class="panel-sub">First ${Math.min(rejSample.length, 10)} rejections with the reason — the "verifiable conclusion" audit requirement. Full audit in the Excel "Rejected" tab.</div>
+        ${rejSample.length ? `<details class="panel" style="margin-top:14px;">
+          <summary style="cursor:pointer;list-style:none;">
+            <h3 style="display:inline-block;margin:0;">Rejected (audit sample)</h3>
+            <span class="panel-sub" style="margin-left:10px;">${Math.min(rejSample.length, 10)} rejections with reasons — click to expand</span>
+          </summary>
+          <div class="panel-sub" style="margin-top:8px;">First ${Math.min(rejSample.length, 10)} rejections with the reason — the "verifiable conclusion" audit requirement. Full audit in the Excel "Rejected" tab.</div>
           ${sampleTableHTML(rejSample.slice(0, 10), 'reject')}
-        </div>` : ''}
+        </details>` : ''}
       ` : ''}
 
       ${isComplete ? `
@@ -2977,18 +2966,7 @@ function renderDetail(m) {
         <div style="font-size:13.5px;color:var(--ink-2);white-space:pre-wrap;">${esc(b.steering)}</div>
       </div>` : ''}
 
-      ${(b.roles || []).length ? `<div class="panel" style="margin-top:14px;">
-        <h3>Roles in this brief</h3>
-        ${(b.roles || []).map((r, i) => `
-          <div style="padding:10px 0;border-bottom:1px solid var(--line-soft);font-size:13.5px;display:grid;grid-template-columns:24px 1.4fr 1fr 1fr 60px;gap:10px;">
-            <span style="color:var(--ink-3);font-family:monospace;">${i + 1}.</span>
-            <span style="font-weight:500;">${esc(r.title || '—')}</span>
-            <span style="color:var(--ink-3);">${esc(r.skill || '')}</span>
-            <span style="color:var(--ink-3);">${esc(r.bucket || '')}</span>
-            <span style="font-family:monospace;text-align:right;">×${r.count || 1}</span>
-          </div>
-        `).join('')}
-      </div>` : ''}
+<!-- v3.22.0 — Roles-in-brief panel removed (only seed/legacy briefs use roles[]) -->
 
       <div class="panel" style="margin-top:24px;border-color:var(--line);">
         <h3 style="color:var(--ink-3);font-size:13px;font-weight:500;text-transform:uppercase;letter-spacing:0.04em;">Danger zone</h3>
