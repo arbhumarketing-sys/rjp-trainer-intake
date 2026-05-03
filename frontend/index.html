@@ -791,8 +791,7 @@ const OUTPUT_OPTIONS = [
 let state = {
   token: 'open',  // auth removed 2026-05-01; sentinel keeps Authorization header machinery happy
   briefs: [],
-  featureRequests: [],
-  persistentExclusions: [],  // v3.2 — always-exclude list applied to every brief
+  // v3.23.0 — featureRequests + persistentExclusions removed (admin tab gone)
   view: 'home',         // home | new | detail | admin
   step: 1,              // 1..4 inside new-brief flow
   activeBriefId: null,
@@ -1216,7 +1215,6 @@ function renderShell() {
         <span class="topbar-clock" id="clock"></span>
         <span class="health-pill unknown" id="health-pill"><span class="dot"></span>Checking…</span>
         ${state.operator ? `<span class="me-pill" title="Submitting briefs as this identity. Click Switch to change.">👤 ${esc(state.operator.name)} <a href="#" id="btn-switch-op" style="margin-left:6px;color:#1E40AF;text-decoration:underline;font-size:11px;">Switch</a></span>` : ''}
-        <button class="btn ghost" id="btn-admin">Admin</button>
         <button class="btn primary" id="btn-new">+ New brief</button>
       </div>
     </header>
@@ -1287,7 +1285,7 @@ function wireShell() {
     showWelcomeModal();
   });
   // v3.22.0 — Repository button removed; logo click serves the same purpose
-  document.getElementById('btn-admin').addEventListener('click', async () => { state.view = 'admin'; state.activeBriefId = null; stopPolling(); await Promise.all([loadFeatureRequests(), loadPersistentExclusions()]); renderMain(); renderSidebar(); });
+  // v3.23.0 — Admin tab removed (persistent exclusions never used; feature requests had 1 smoke test)
   document.getElementById('btn-new').addEventListener('click', () => {
     // v3.14.0 — if there's an unsaved chat draft, offer to resume before
     // wiping it. Stops the "I lost an hour of typing" failure mode.
@@ -1498,19 +1496,7 @@ function renderIterationSummary(b) {
     </div>`;
 }
 
-async function loadFeatureRequests() {
-  try {
-    const r = await api('GET', '/api/feature-requests');
-    state.featureRequests = r.featureRequests || [];
-  } catch (e) { toast(e.message, 'error'); }
-}
-
-async function loadPersistentExclusions() {
-  try {
-    const r = await api('GET', '/api/persistent-exclusions');
-    state.persistentExclusions = r.persistentExclusions || [];
-  } catch (e) { toast(e.message, 'error'); }
-}
+// v3.23.0 — loadFeatureRequests + loadPersistentExclusions removed (Admin tab gone)
 function startClock() {
   const c = document.getElementById('clock');
   if (!c) return;
@@ -1581,7 +1567,7 @@ function renderMain() {
   if (!m) return;
   if (state.view === 'chat') return renderChat(m);
   if (state.view === 'new') return renderWizard(m);
-  if (state.view === 'admin') return renderAdmin(m);
+  // v3.23.0 — admin view removed
   if (state.view === 'detail' && state.activeBriefId) return renderDetail(m);
   return renderHome(m);
 }
@@ -1987,110 +1973,11 @@ function renderHome(m) {
   // "+ New brief" button is always visible and serves the same purpose.
 }
 
-function renderAdmin(m) {
-  const frs = state.featureRequests || [];
-  const pex = state.persistentExclusions || [];
-  const grouped = { pending: [], approved: [], 'in-progress': [], shipped: [], rejected: [] };
-  for (const f of frs) (grouped[f.status] || grouped.pending).push(f);
-  m.innerHTML = `
-    <div class="center">
-      <div class="page-head">
-        <h1>Admin</h1>
-        <div class="sub">Persistent exclusions (always-skip companies) and Form 2 feature requests.</div>
-      </div>
-
-      <div class="panel">
-        <h3>Persistent exclusions <span style="color:var(--ink-3);font-weight:400;font-size:13px;">· ${pex.length}</span></h3>
-        <div class="panel-sub">Companies/firms here are auto-added to the exclusions list of <strong>every</strong> new brief, on top of the default big-firm list. Use this for clients you've engaged elsewhere ("InfraCloud — already engaged"), known-bad sources, or principals you can't poach from.</div>
-        <div class="quick-intake" style="margin-bottom:10px;">
-          <input id="pex-term" placeholder="e.g. InfraCloud Technologies" maxlength="80" />
-          <input id="pex-note" placeholder="Note (optional, e.g. 'already engaged on Backstage brief')" maxlength="400" style="flex:2;" />
-          <button class="btn primary" id="btn-pex-add">+ Add</button>
-        </div>
-        ${pex.length ? `<div class="frq-list">${pex.map(p => `
-          <div class="frq-item" data-pex-id="${esc(p.id)}">
-            <div>
-              <div style="font-size:13.5px;color:var(--ink);"><strong>${esc(p.term)}</strong>${p.note ? ` <span style="color:var(--ink-3);font-weight:400;">— ${esc(p.note)}</span>` : ''}</div>
-              <div class="frq-meta">${esc(p.addedBy || '?')} · ${p.addedAt ? new Date(p.addedAt).toLocaleString('en-IN') : ''}${p.sourceBriefId ? ` · from brief ${esc(p.sourceBriefId)}` : ''}</div>
-            </div>
-            <div class="frq-actions">
-              <button class="btn pex-del" title="Remove from persistent exclusions">Remove</button>
-            </div>
-          </div>
-        `).join('')}</div>` : '<div class="hint">No persistent exclusions yet. Add one above to start.</div>'}
-      </div>
-
-      <div class="page-head" style="margin-top:24px;margin-bottom:14px;">
-        <h2 style="font-size:18px;font-weight:600;margin:0;">Feature requests</h2>
-        <div class="sub" style="margin-top:2px;">Form 2 submissions. No build kicks off until you approve.</div>
-      </div>
-
-      ${['pending', 'approved', 'in-progress', 'shipped', 'rejected'].map(s => `
-        <div class="panel">
-          <h3>${s.replace('-', ' ')} <span style="color:var(--ink-3);font-weight:400;font-size:13px;">· ${grouped[s].length}</span></h3>
-          ${grouped[s].length ? `<div class="frq-list">${grouped[s].map(f => `
-            <div class="frq-item" data-id="${esc(f.id)}">
-              <div>
-                <div style="font-size:13.5px;color:var(--ink);white-space:pre-wrap;">${esc(f.text)}</div>
-                <div class="frq-meta">${esc(f.submittedBy)} · ${f.createdAt ? new Date(f.createdAt).toLocaleString('en-IN') : ''}${f.contextBriefId ? ' · brief ' + esc(f.contextBriefId) : ''}</div>
-                ${f.adminNote ? `<div class="frq-meta" style="margin-top:4px;color:var(--ink-2);"><strong>Note:</strong> ${esc(f.adminNote)}</div>` : ''}
-              </div>
-              <div class="frq-actions">
-                ${s === 'pending' ? `
-                  <button class="btn primary frq-set" data-status="approved">Approve</button>
-                  <button class="btn frq-set" data-status="rejected">Reject</button>` :
-                s === 'approved' ? `
-                  <button class="btn primary frq-set" data-status="in-progress">Start build</button>
-                  <button class="btn frq-set" data-status="rejected">Reject</button>` :
-                s === 'in-progress' ? `
-                  <button class="btn primary frq-set" data-status="shipped">Mark shipped</button>` :
-                ''}
-              </div>
-            </div>
-          `).join('')}</div>` : '<div class="hint">None yet.</div>'}
-        </div>
-      `).join('')}
-    </div>
-  `;
-  m.querySelectorAll('.frq-set').forEach(b => b.addEventListener('click', async e => {
-    const id = e.target.closest('.frq-item').dataset.id;
-    const status = e.target.dataset.status;
-    try {
-      await api('PATCH', '/api/feature-requests/' + encodeURIComponent(id), { status });
-      await loadFeatureRequests();
-      renderMain();
-      toast('Updated.', 'success');
-    } catch (err) { toast(err.message, 'error'); }
-  }));
-
-  // Persistent exclusion add
-  const pexAddBtn = document.getElementById('btn-pex-add');
-  if (pexAddBtn) pexAddBtn.addEventListener('click', async () => {
-    const term = document.getElementById('pex-term').value.trim();
-    const note = document.getElementById('pex-note').value.trim();
-    if (!term) { toast('Type a company/term first.', 'error'); return; }
-    pexAddBtn.disabled = true;
-    try {
-      await api('POST', '/api/persistent-exclusions', { term, note });
-      await loadPersistentExclusions();
-      renderMain();
-      toast(`Added "${term}" to persistent exclusions.`, 'success');
-    } catch (err) { toast(err.message, 'error'); }
-    finally { pexAddBtn.disabled = false; }
-  });
-
-  // Persistent exclusion remove
-  m.querySelectorAll('.pex-del').forEach(b => b.addEventListener('click', async e => {
-    const id = e.target.closest('[data-pex-id]').dataset.pexId;
-    if (!confirm('Remove this persistent exclusion? It will stop being applied to new briefs.')) return;
-    try {
-      await api('DELETE', '/api/persistent-exclusions/' + encodeURIComponent(id));
-      await loadPersistentExclusions();
-      renderMain();
-      toast('Removed.', 'success');
-    } catch (err) { toast(err.message, 'error'); }
-  }));
-}
+// v3.23.0 — renderAdmin removed. Admin tab held two unused features:
+//   - Persistent exclusions: 0 records ever added across the deployment
+//   - Feature requests (Form 2): 1 record total (a smoke test)
+// Backend endpoints + Postgres tables retained (orphaned but harmless) so any
+// historical references stay queryable. Can be fully purged in a later cleanup.
 
 /* ============================================================ */
 /* WIZARD                                                       */
@@ -2941,23 +2828,14 @@ function renderDetail(m) {
 
       ${isComplete ? `
         <div class="panel feedback-form" style="margin-top:14px;">
-          <h3>Feedback on this run</h3>
-          <div class="panel-sub">Form 1 — say what was off. The pipeline re-runs with your feedback applied as steering. Form 2 — feature suggestions go into a queue for Gulshan to review (no auto-build).</div>
-
+          <h3>Re-run with feedback</h3>
+          <div class="panel-sub">Tell the pipeline what was off. Your text becomes additional steering for the rerank.</div>
           <div class="field">
-            <label class="lbl">Form 1 — feedback for re-run</label>
+            <label class="lbl">Feedback for the next run</label>
             <textarea id="f-feedback" placeholder="e.g. Too many DBA generalists. Filter for Aurora-specific. Drop AnalyticsVidhya — already engaged."></textarea>
           </div>
           <div class="panel-actions" style="justify-content:flex-start;margin-top:6px;">
             <button class="btn primary" id="btn-feedback">Re-run with feedback</button>
-          </div>
-
-          <div class="field" style="margin-top:18px;">
-            <label class="lbl">Form 2 — feature request (admin queue, no auto-build)</label>
-            <textarea id="f-frq" placeholder="e.g. Add a column showing past training programs (counts) per candidate. Or — save query templates by domain."></textarea>
-          </div>
-          <div class="panel-actions" style="justify-content:flex-start;margin-top:6px;">
-            <button class="btn" id="btn-frq">Submit feature request</button>
           </div>
         </div>` : ''}
 
@@ -3042,19 +2920,7 @@ function renderDetail(m) {
     } catch (e) { toast(e.message, 'error'); fb.disabled = false; fb.textContent = 'Re-run with feedback'; }
   });
 
-  const frb = document.getElementById('btn-frq');
-  if (frb) frb.addEventListener('click', async () => {
-    const text = document.getElementById('f-frq').value.trim();
-    if (!text) { toast('Type the feature request first.', 'error'); return; }
-    frb.disabled = true; frb.textContent = 'Submitting…';
-    try {
-      await api('POST', '/api/feature-requests', { text, contextBriefId: b.id });
-      document.getElementById('f-frq').value = '';
-      toast('Feature request queued. Gulshan will review.', 'success');
-      frb.disabled = false; frb.textContent = 'Submit feature request';
-    } catch (e) { toast(e.message, 'error'); frb.disabled = false; frb.textContent = 'Submit feature request'; }
-  });
-
+  // v3.23.0 — Form 2 (feature-request submission) removed; Form 1 stays as the iteration loop
   const fullBtn = document.getElementById('btn-run-full');
   if (fullBtn) fullBtn.addEventListener('click', async () => {
     fullBtn.disabled = true; fullBtn.textContent = 'Starting…';

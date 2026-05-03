@@ -72,18 +72,18 @@ app.get('/healthz', (req, res) => {
   res.json({
     ok: true,
     ts: new Date().toISOString(),
-    version: '3.22.0',
+    version: '3.23.0',
     uptimeSec: Math.round((Date.now() - _bootedAt) / 1000),
     storage: process.env.DATABASE_URL ? 'postgres' : 'filesystem',
     dirty,
     llm: process.env.ANTHROPIC_VIA_CLAUDE_CLI === 'true' ? 'claude-cli' : (process.env.ANTHROPIC_API_KEY ? 'api' : 'disabled'),
     cliQueue,
     perplexity: { configured: hasPerplexity() },
-    apify: apifyPool.status(),  // v3.22.0 — per-account pool balances (cached, refresh in background)
+    apify: apifyPool.status(),  // v3.23.0 — per-account pool balances (cached, refresh in background)
   });
 });
 
-// v3.22.0 — auth disabled (internal-only URL); /api/auth/login endpoint removed
+// v3.23.0 — auth disabled (internal-only URL); /api/auth/login endpoint removed
 
 /* ---------- Briefs ---------- */
 app.get('/api/briefs', auth.requireAuth, (req, res) => {
@@ -383,81 +383,12 @@ app.get('/api/briefs/:id/output', auth.requireAuth, async (req, res) => {
   fs.createReadStream(resolved).pipe(res);
 });
 
-/* ---------- Feature requests (Form 2 — admin dashboard only, no push) ---------- */
-app.post('/api/feature-requests', auth.requireAuth, (req, res) => {
-  const body = req.body || {};
-  const text = String(body.text || '').slice(0, 4000).trim();
-  if (!text) return res.status(400).json({ error: 'text required' });
-  const fr = {
-    id: 'fr_' + crypto.randomBytes(4).toString('hex') + '_' + Date.now().toString(36),
-    text,
-    submittedBy: String(body.submittedBy || (req.user && req.user.team) || 'rjp-infotek').slice(0, 100),
-    contextBriefId: String(body.contextBriefId || '').slice(0, 80),
-    status: 'pending',
-    createdAt: new Date().toISOString(),
-  };
-  store.saveFeatureRequest(fr);
-  res.json({ featureRequest: fr });
-});
+// v3.23.0 — Admin endpoints removed (Admin tab gone; 0 persistent exclusions
+// + 1 feature-request total ever, no UI consumed them). store.js retains the
+// Postgres-backed helpers so historical rows stay readable if ever needed,
+// just no HTTP surface anymore.
 
-app.get('/api/feature-requests', auth.requireAuth, (req, res) => {
-  res.json({ featureRequests: store.listFeatureRequests() });
-});
-
-app.patch('/api/feature-requests/:id', auth.requireAuth, (req, res) => {
-  const id = req.params.id;
-  const body = req.body || {};
-  const valid = ['pending', 'approved', 'rejected', 'in-progress', 'shipped'];
-  if (body.status !== undefined && !valid.includes(body.status)) {
-    return res.status(400).json({ error: `invalid status (allowed: ${valid.join(', ')})` });
-  }
-  const patch = {};
-  if (body.status) patch.status = body.status;
-  if (typeof body.adminNote === 'string') patch.adminNote = body.adminNote.slice(0, 2000);
-  patch.updatedAt = new Date().toISOString();
-  const updated = store.updateFeatureRequest(id, patch);
-  if (!updated) return res.status(404).json({ error: 'not found' });
-  res.json({ featureRequest: updated });
-});
-
-/* ---------- Persistent exclusions (v3.2) ----------
-   GET  /api/persistent-exclusions
-   POST /api/persistent-exclusions    { term, note?, sourceBriefId? }
-   DELETE /api/persistent-exclusions/:id
-
-   These are always-exclude terms applied to every brief on top of the
-   default big-firm list. Listed in admin tab; pipeline merges them into
-   bp.exclusions during normalizeBrief. */
-app.get('/api/persistent-exclusions', auth.requireAuth, (req, res) => {
-  res.json({ persistentExclusions: store.getPersistentExclusions() });
-});
-
-app.post('/api/persistent-exclusions', auth.requireAuth, (req, res) => {
-  const body = req.body || {};
-  const term = String(body.term || '').trim();
-  if (!term || term.length > 80) return res.status(400).json({ error: 'term required (1-80 chars)' });
-  // Reject dupes (case-insensitive) so the list doesn't bloat
-  const existing = store.getPersistentExclusions().find(p => (p.term || '').toLowerCase() === term.toLowerCase());
-  if (existing) return res.status(409).json({ error: 'term already in persistent-exclusion list', existing });
-  const p = {
-    id: 'pex_' + crypto.randomBytes(4).toString('hex') + '_' + Date.now().toString(36),
-    term,
-    note: String(body.note || '').slice(0, 400),
-    sourceBriefId: String(body.sourceBriefId || '').slice(0, 80),
-    addedBy: String(body.addedBy || (req.user && req.user.team) || 'rjp-infotek').slice(0, 100),
-    addedAt: new Date().toISOString(),
-  };
-  store.addPersistentExclusion(p);
-  res.json({ persistentExclusion: p });
-});
-
-app.delete('/api/persistent-exclusions/:id', auth.requireAuth, (req, res) => {
-  const ok = store.removePersistentExclusion(req.params.id);
-  if (!ok) return res.status(404).json({ error: 'not found' });
-  res.json({ ok: true });
-});
-
-/* ---------- Client lifecycle status (v3.22.0) ----------
+/* ---------- Client lifecycle status (v3.23.0) ----------
    PATCH /api/briefs/:id/client-status   { clientStatus, note? }
    Tracks the post-pipeline workflow: pending (default) → shared_with_client →
    candidate_booked / client_rejected / done_no_booking. Pipeline `status` stays
@@ -527,7 +458,7 @@ app.post('/api/briefs/:id/scores', auth.requireAuth, async (req, res) => {
   }
 });
 
-/* ---------- Candidate outreach (v3.22.0) ----------
+/* ---------- Candidate outreach (v3.23.0) ----------
    GET    /api/briefs/:id/outreach
    POST   /api/briefs/:id/outreach   { candidateUrl, candidateName, status, note?, by? }
    DELETE /api/briefs/:id/outreach   body or query: { candidateUrl }
@@ -613,7 +544,7 @@ app.use((err, req, res, next) => {
   reapOrphansOnBoot();
 
   app.listen(PORT, () => {
-    console.log(`RJP Sourcing Portal v3.22.0 listening on :${PORT}`);
+    console.log(`RJP Sourcing Portal v3.23.0 listening on :${PORT}`);
     console.log(`  Apify Google actor:   ${process.env.APIFY_GOOGLE_ACTOR || process.env.APIFY_ACTOR || 'apify~rag-web-browser'}`);
     console.log(`  Apify LinkedIn actor: ${process.env.APIFY_LINKEDIN_ACTOR || 'harvestapi/linkedin-profile-scraper'}`);
     console.log(`  LLM client:           ${process.env.ANTHROPIC_VIA_CLAUDE_CLI === 'true' ? 'claude CLI subprocess (Max plan)' : (process.env.ANTHROPIC_API_KEY ? 'API key' : 'DISABLED')}`);
