@@ -798,6 +798,43 @@ function clearOperator() {
   state.operator = null;
 }
 
+/* v3.14.0 — chat-flow draft auto-save. Persists the in-progress chat (text,
+   parse, clarifying answers, current step) to localStorage on every state
+   change, so a tab close, accidental nav, or reload doesn't lose work.
+   24-hour TTL — older drafts auto-expire. Cleared on successful submit
+   or explicit Discard via the "+ New brief" prompt. */
+const CHAT_DRAFT_KEY = 'rjp_chat_draft';
+const CHAT_DRAFT_TTL_MS = 24 * 60 * 60 * 1000;
+function saveChatDraft() {
+  const empty = state.chatStep === 1 && !(state.chatInput || '').trim();
+  if (empty) return clearChatDraft();
+  try {
+    localStorage.setItem(CHAT_DRAFT_KEY, JSON.stringify({
+      chatStep:      state.chatStep,
+      chatInput:     state.chatInput,
+      chatParsed:    state.chatParsed,
+      chatQuestions: state.chatQuestions,
+      chatAnswers:   state.chatAnswers,
+      ts:            Date.now(),
+    }));
+  } catch (_) {}
+}
+function loadChatDraft() {
+  try {
+    const raw = localStorage.getItem(CHAT_DRAFT_KEY);
+    if (!raw) return null;
+    const d = JSON.parse(raw);
+    if (!d || typeof d.ts !== 'number' || (Date.now() - d.ts) > CHAT_DRAFT_TTL_MS) {
+      clearChatDraft();
+      return null;
+    }
+    return d;
+  } catch (_) { return null; }
+}
+function clearChatDraft() {
+  try { localStorage.removeItem(CHAT_DRAFT_KEY); } catch (_) {}
+}
+
 /* v3.13.0 — first-visit identity prompt. Painless overlay; required to dismiss
    so we always have an audit trail. Re-shown when the user clicks Switch. */
 function showWelcomeModal() {
@@ -1070,6 +1107,27 @@ function wireShell() {
   document.getElementById('btn-home').addEventListener('click', () => { state.view = 'home'; state.activeBriefId = null; stopPolling(); renderMain(); renderSidebar(); });
   document.getElementById('btn-admin').addEventListener('click', async () => { state.view = 'admin'; state.activeBriefId = null; stopPolling(); await Promise.all([loadFeatureRequests(), loadPersistentExclusions()]); renderMain(); renderSidebar(); });
   document.getElementById('btn-new').addEventListener('click', () => {
+    // v3.14.0 — if there's an unsaved chat draft, offer to resume before
+    // wiping it. Stops the "I lost an hour of typing" failure mode.
+    const draft = loadChatDraft();
+    if (draft) {
+      const ageMin = Math.max(1, Math.round((Date.now() - draft.ts) / 60000));
+      const stepNames = ['Describe', 'Review parse', 'Refine answers', 'Submit'];
+      const stepName = stepNames[(draft.chatStep || 1) - 1] || 'previous step';
+      const ok = confirm(`You have an unsaved chat draft from ~${ageMin} min ago (at "${stepName}").\n\nClick OK to resume it.\nClick Cancel to discard it and start fresh.`);
+      if (ok) {
+        state.chatStep      = draft.chatStep      || 1;
+        state.chatInput     = draft.chatInput     || '';
+        state.chatParsed    = draft.chatParsed    || null;
+        state.chatQuestions = draft.chatQuestions || [];
+        state.chatAnswers   = draft.chatAnswers   || {};
+        state.chatLoading   = false;
+        state.view = 'chat';
+        renderMain(); renderSidebar();
+        return;
+      }
+      clearChatDraft();
+    }
     // v3.10.0 — default "+ New brief" goes to the chat-style input (Perplexity-flow).
     // The advanced wizard is still reachable via a link on chat step 1.
     state.view = 'chat'; chatReset();
@@ -1280,6 +1338,7 @@ function chatReset() {
   state.chatParsed = null;
   state.chatQuestions = [];
   state.chatAnswers = {};
+  clearChatDraft(); // v3.14.0 — explicit reset wipes any saved draft too
 }
 
 function chatHeadline(step) {
@@ -1354,7 +1413,7 @@ function renderChatStep1() {
     </div>
   `;
   const ta = document.getElementById('chat-input');
-  ta.addEventListener('input', e => state.chatInput = e.target.value);
+  ta.addEventListener('input', e => { state.chatInput = e.target.value; saveChatDraft(); });
   ta.focus();
   document.getElementById('btn-chat-send').addEventListener('click', chatHandleSend);
 }
@@ -1368,6 +1427,7 @@ async function chatHandleSend() {
   try {
     const r = await api('POST', '/api/briefs/parse', { text });
     state.chatParsed = r.parsed || {};
+    saveChatDraft();  // v3.14.0 — persist parse result so reload doesn't burn a Haiku call
     // Default mode if not set
     if (!state.chatParsed.searchMode) state.chatParsed.searchMode = 'std';
     state.chatLoading = false;
@@ -1437,6 +1497,7 @@ function chatCollectStep2() {
   state.chatParsed.should   = chatLinesToArr(document.getElementById('cp-should').value);
   state.chatParsed.mustNot  = chatLinesToArr(document.getElementById('cp-mustnot').value);
   state.chatParsed.customExclusions = chatLinesToArr(document.getElementById('cp-customex').value);
+  saveChatDraft();  // v3.14.0
 }
 
 async function chatHandleAskQuestions() {
@@ -1452,6 +1513,7 @@ async function chatHandleAskQuestions() {
     state.chatAnswers = {};
     state.chatLoading = false;
     state.chatStep = 3;
+    saveChatDraft();  // v3.14.0 — persist questions so reload doesn't burn another Haiku call
     renderChat(document.getElementById('main'));
   } catch (e) {
     state.chatLoading = false;
@@ -1518,6 +1580,7 @@ function renderChatStep3() {
       if (state.chatAnswers[qid] === cid) delete state.chatAnswers[qid];
       else state.chatAnswers[qid] = cid;
     }
+    saveChatDraft();  // v3.14.0
     renderChatStep3();
   }));
   document.getElementById('btn-chat-back').addEventListener('click', () => { state.chatStep = 2; renderChat(document.getElementById('main')); });
@@ -1633,6 +1696,7 @@ async function chatHandleSubmit() {
     await loadBriefs();
     state.activeBriefId = r.brief.id;
     state.view = 'detail';
+    clearChatDraft();  // v3.14.0 — submit succeeded, draft is no longer needed
     chatReset();
     state.chatLoading = false;
     startPolling();
