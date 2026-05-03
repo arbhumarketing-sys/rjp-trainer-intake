@@ -226,6 +226,17 @@
   }
   .empty-side a { color: #1e40af; text-decoration: underline; }
 
+  /* v3.16.0 — cost breakdown strip on detail view */
+  .cost-breakdown {
+    margin-top: 6px; padding: 8px 12px; background: #f8fafc;
+    border: 1px dashed var(--line); border-radius: 4px;
+    font-size: 12px; color: var(--ink-2);
+  }
+  .cost-breakdown code {
+    background: #fff; padding: 1px 5px; border-radius: 3px;
+    font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; color: #1e40af;
+  }
+
   .brief-list { display: flex; flex-direction: column; gap: 2px; }
   .brief-item {
     padding: 9px 10px;
@@ -2770,7 +2781,19 @@ function renderDetail(m) {
         <div class="meta-cell"><span class="meta-label">Rejected</span><span class="meta-val" style="color:var(--bad);">${counts.rejected || 0}</span></div>
         <div class="meta-cell"><span class="meta-label">Status</span><span class="meta-val"><span class="status-pill status-${status}">${status}</span></span></div>
         <div class="meta-cell"><span class="meta-label">Exclusions</span><span class="meta-val" style="font-size:11.5px;">${exclusionList.length ? esc(exclusionList.slice(0, 3).join(', ')) + (exclusionList.length > 3 ? '…' : '') : 'default big-firm only'}</span></div>
+        ${b.cost ? `<div class="meta-cell" title="Claude $${b.cost.claude.usd.toFixed(4)} (${b.cost.claude.calls} calls, reported by CLI)\nApify $${b.cost.apify.total.toFixed(4)} (${b.cost.apify.google.queries} Google queries × $${b.cost.apify.google.ratePerQuery} + ${b.cost.apify.linkedin.profiles} LinkedIn profiles × $${b.cost.apify.linkedin.ratePerProfile})\nApify cost is estimated from rates; Claude cost is reported.">
+          <span class="meta-label">Cost</span>
+          <span class="meta-val" style="color:#1e40af;font-family:ui-monospace,Menlo,monospace;">$${b.cost.total.toFixed(4)}</span>
+        </div>` : ''}
       </div>
+      ${b.cost ? `<div class="cost-breakdown">
+        <strong>Cost breakdown</strong> &middot;
+        Claude <code>$${b.cost.claude.usd.toFixed(4)}</code> (${b.cost.claude.calls} calls) &middot;
+        Apify <code>$${b.cost.apify.total.toFixed(4)}</code>
+        (Google ${b.cost.apify.google.queries} × $${b.cost.apify.google.ratePerQuery} = <code>$${b.cost.apify.google.usd.toFixed(4)}</code>,
+        LinkedIn ${b.cost.apify.linkedin.profiles} × $${b.cost.apify.linkedin.ratePerProfile} = <code>$${b.cost.apify.linkedin.usd.toFixed(4)}</code>)
+        <span style="color:var(--ink-3);">&middot; Apify cost is estimated from rates; Claude cost is reported by the CLI.</span>
+      </div>` : ''}
 
       <div class="panel">
         <h3>Pipeline progress</h3>

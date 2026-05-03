@@ -164,6 +164,67 @@ function hasLlmClient() {
 // or any free-text mention of lab access in must/should/steering. The negative
 // match ("Not needed") short-circuits — operators who answered "no labs" don't
 // pay the Haiku tax.
+/* v3.16.0 — per-brief cost tracking. Sums Claude CLI usage (`total_cost_usd`
+   from each subprocess response, captured via the wrapped getAnthropic
+   client) plus estimated Apify spend (rate × unit count) into a cost block
+   written onto the brief at pipeline completion. Surfaced in the brief
+   detail UI so RJP can see what each search actually cost.
+   Apify rates are estimates (the SDK doesn't return per-run cost cleanly);
+   override via env. Anthropic cost comes straight from the CLI's own
+   total_cost_usd field, so it's a real reported number, not an estimate. */
+const APIFY_COST_PER_GOOGLE_QUERY     = parseFloat(process.env.APIFY_COST_PER_GOOGLE_QUERY     || '0.005'); // rag-web-browser ~$0.005/query
+const APIFY_COST_PER_LINKEDIN_PROFILE = parseFloat(process.env.APIFY_COST_PER_LINKEDIN_PROFILE || '0.004'); // harvestapi ~$4/1k profiles
+const _briefCosts = new Map();
+function _newCost() {
+  return {
+    claude:   { usd: 0, calls: 0 },
+    apify:    { googleQueries: 0, linkedinProfiles: 0, googleUsd: 0, linkedinUsd: 0 },
+  };
+}
+function getCost(briefId) {
+  if (!briefId) return _newCost();
+  if (!_briefCosts.has(briefId)) _briefCosts.set(briefId, _newCost());
+  return _briefCosts.get(briefId);
+}
+function trackClaudeCost(briefId, resp) {
+  if (!briefId || !resp) return;
+  const usd = resp && resp._viaClaudeCli && resp._viaClaudeCli.total_cost_usd;
+  if (typeof usd === 'number' && isFinite(usd)) {
+    const c = getCost(briefId);
+    c.claude.usd  += usd;
+    c.claude.calls += 1;
+  }
+}
+function trackApifyGoogleQuery(briefId) {
+  if (!briefId) return;
+  const c = getCost(briefId);
+  c.apify.googleQueries += 1;
+  c.apify.googleUsd     += APIFY_COST_PER_GOOGLE_QUERY;
+}
+function trackApifyLinkedInProfiles(briefId, n) {
+  if (!briefId || !n) return;
+  const c = getCost(briefId);
+  c.apify.linkedinProfiles += n;
+  c.apify.linkedinUsd      += n * APIFY_COST_PER_LINKEDIN_PROFILE;
+}
+function finalizeCost(briefId) {
+  const c = getCost(briefId);
+  const apifyUsd = c.apify.googleUsd + c.apify.linkedinUsd;
+  const total    = c.claude.usd + apifyUsd;
+  const r4 = (n) => Math.round(n * 10000) / 10000;
+  return {
+    total:  r4(total),
+    claude: { usd: r4(c.claude.usd), calls: c.claude.calls, source: 'cli-reported' },
+    apify:  {
+      total:    r4(apifyUsd),
+      google:   { queries: c.apify.googleQueries,    usd: r4(c.apify.googleUsd),   ratePerQuery:    APIFY_COST_PER_GOOGLE_QUERY },
+      linkedin: { profiles: c.apify.linkedinProfiles, usd: r4(c.apify.linkedinUsd), ratePerProfile:  APIFY_COST_PER_LINKEDIN_PROFILE },
+      source:   'estimated',
+    },
+  };
+}
+function clearCost(briefId) { _briefCosts.delete(briefId); }
+
 function briefRequiresLabs(bp) {
   if (process.env.DISABLE_LAB_PROVIDERS === '1') return false;
   const haystack = [
@@ -653,6 +714,7 @@ function sanitizeQueryTerm(s) {
 /* ---------- Apify: Google search ---------- */
 async function runGoogleQuery(client, q, briefId) {
   if (process.env.MOCK_APIFY === '1') return mockGoogle(q);
+  trackApifyGoogleQuery(briefId);  // v3.16.0 — count this query toward Apify cost regardless of success (we paid for the actor invocation)
   try {
     const input = {
       query: q.query,
@@ -725,6 +787,7 @@ function canonLinkedinUrl(u) {
 }
 
 async function enrichLinkedIn(client, urls, briefId) {
+  if (urls && urls.length) trackApifyLinkedInProfiles(briefId, urls.length);  // v3.16.0 — harvestapi charges per profile sent
   if (process.env.MOCK_APIFY === '1' || !urls.length) {
     // Mock: derive location from URL hint. Real harvestapi returns the LinkedIn truth.
     return urls.map(u => {
@@ -788,14 +851,26 @@ async function enrichLinkedIn(client, urls, briefId) {
 }
 
 /* ---------- Claude API (L1.1, L1.2, L2, L3, classifier) ---------- */
-function getAnthropic() {
-  if (_USE_CLI) return ClaudeCliClient ? new ClaudeCliClient() : null;
-  if (!Anthropic || !process.env.ANTHROPIC_API_KEY) return null;
-  return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+// v3.16.0 — when briefId is supplied, the returned client auto-tracks Claude
+// cost into the per-brief cost map via trackClaudeCost. No-op when briefId
+// is omitted (server.js parse/clarify/ask-questions endpoints — those calls
+// happen pre-brief and aren't attributed to one).
+function getAnthropic(briefId) {
+  let raw = null;
+  if (_USE_CLI) raw = ClaudeCliClient ? new ClaudeCliClient() : null;
+  else if (Anthropic && process.env.ANTHROPIC_API_KEY) raw = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  if (!raw || !briefId) return raw;
+  const origCreate = raw.messages.create.bind(raw.messages);
+  raw.messages.create = async (params) => {
+    const resp = await origCreate(params);
+    trackClaudeCost(briefId, resp);
+    return resp;
+  };
+  return raw;
 }
 
 async function claudeKnowledgeCall(briefId, kw, bp) {
-  const client = getAnthropic();
+  const client = getAnthropic(briefId);
   if (!client) return [];
   try {
     const sys = `You are a sourcing assistant for a B2B trainer placement firm in India. Given a technology/skill, return named freelance corporate trainers, independent instructors, consultants, SMEs, or architects in India who deliver training. Do NOT return conference speakers without training-delivery evidence. Do NOT return employees of: ${bp.exclusions.slice(0, 8).join(', ')}.${domainHint(bp.domain)}${steeringHint(bp.steering)}`;
@@ -880,7 +955,7 @@ async function perplexityKnowledgeCall(briefId, kw, bp) {
    keyword (Haiku). Skipped silently when irrelevant — most briefs won't
    trigger it, so no log noise. */
 async function claudeLabProviders(briefId, kw, bp) {
-  const client = getAnthropic();
+  const client = getAnthropic(briefId);
   if (!client) return [];
   try {
     const sys = `You list Indian lab providers, sandbox vendors, and institutes that supply hands-on lab environments for corporate training in a specific technology. Includes: vendor-provided sandbox / trial programmes (e.g., Splunk Cloud Trial, AWS / Azure / GCP credits-for-trainers, Salesforce Trailhead playgrounds, Snowflake free-tier), independent lab-environment providers, and Indian institutes that rent out lab access for off-site training. Concise, India-focused, verifiable.${domainHint(bp && bp.domain)}${steeringHint(bp && bp.steering)}`;
@@ -920,7 +995,7 @@ async function claudeLabProviders(briefId, kw, bp) {
 }
 
 async function claudeAdjacentTech(briefId, kw, bp) {
-  const client = getAnthropic();
+  const client = getAnthropic(briefId);
   if (!client) return [];
   try {
     const sys = `You suggest adjacent technologies whose practitioners often deliver training in a target technology. Concise, specific, India-trainer-pool-aware.${domainHint(bp && bp.domain)}${steeringHint(bp && bp.steering)}`;
@@ -951,7 +1026,7 @@ async function claudeAdjacentTech(briefId, kw, bp) {
 }
 
 async function claudeInstitutes(briefId, kw, bp) {
-  const client = getAnthropic();
+  const client = getAnthropic(briefId);
   if (!client) return [];
   try {
     const sys = `You list Indian training institutes that deliver corporate training in specific technologies. Concise, verifiable.${domainHint(bp && bp.domain)}${steeringHint(bp && bp.steering)}`;
@@ -994,7 +1069,7 @@ async function claudeInstitutes(briefId, kw, bp) {
    Fires when L1+L2+L3 still produced fewer than ~12 unique candidates, OR
    when the brief is in niche mode. Costs ~$0.005 per keyword (Haiku).        */
 async function claudeFoundersAtSmallFirms(briefId, kw, bp) {
-  const client = getAnthropic();
+  const client = getAnthropic(briefId);
   if (!client) return [];
   try {
     const sys = `You list founders/principals/owners/CXOs of SMALL Indian firms (preferably 1-50 employees, NOT the big SI firms — exclude ${bp.exclusions.slice(0, 8).join(', ')}) that specialise in the target technology. They deliver corporate training as part of their consulting/services practice even when they don't self-label as "trainer". Pool: ex-FTEs of the principal vendor (Splunk, AWS, Salesforce etc.) who founded boutique consultancies. Concise, India-focused, verifiable.${domainHint(bp.domain)}${steeringHint(bp.steering)}`;
@@ -1328,7 +1403,7 @@ async function classifySignalsBatched(itemsWithHarvest, bp, briefId) {
 }
 
 async function classifySignalLLM(batch, bp, briefId, batchOffset) {
-  const client = getAnthropic();
+  const client = getAnthropic(briefId);
   if (!client) throw new Error('No LLM client available');
 
   const sys = `You classify LinkedIn-style profiles for an Indian B2B trainer placement firm into ONE signal category each.
@@ -1537,7 +1612,7 @@ async function preflightQualityCheck(capped, brief, bp, briefId) {
     && capped.length >= 3;
   if (!useCheck) return null;
 
-  const client = getAnthropic();
+  const client = getAnthropic(briefId);
   if (!client) return null;
 
   // Sample top, middle, bottom for representative coverage
@@ -1606,7 +1681,7 @@ async function multiPassRerank(accepted, brief, bp, briefId) {
     && accepted.length >= 5;
   if (!useRerank) return accepted;
 
-  const client = getAnthropic();
+  const client = getAnthropic(briefId);
   if (!client) return accepted;
 
   const top = accepted.slice(0, RERANK_TOP_N);
@@ -2178,7 +2253,7 @@ async function smartCleanKeywords(rawKeywords, briefDomain, briefTitle, briefId)
     };
   }
 
-  const client = getAnthropic();
+  const client = getAnthropic(briefId);
   if (!client) {
     if (briefId) logAndSave(briefId, `[keyword cleanup] LLM client init failed; dropped ${proseKws.length} prose-like keyword(s)`, 'warn');
     return { keywords: cleanKws.slice(0, 8), wasMessy: true, proseDropped: proseKws };
@@ -2883,6 +2958,9 @@ async function runPipeline(briefId, opts = {}) {
     };
     const iterationSummary = (refreshedBrief.iterationSummary || []).concat([summaryEntry]);
 
+    // v3.16.0 — finalize per-brief cost (Claude reported + Apify estimated)
+    const cost = finalizeCost(briefId);
+
     store.update(briefId, {
       status: 'complete',
       outputFile: path.basename(file),
@@ -2897,8 +2975,10 @@ async function runPipeline(briefId, opts = {}) {
       preflight: preflightResult,
       iterationSummary,
       _prevTopNames: currentTopNames,
+      cost,
     });
-    logAndSave(briefId, `Pipeline complete — ${capped.length} candidates, ${(stat.size / 1024).toFixed(1)} KB, ${totalElapsed}s total${lowYield ? ' [LOW YIELD]' : ''}`);
+    clearCost(briefId);
+    logAndSave(briefId, `Pipeline complete — ${capped.length} candidates, ${(stat.size / 1024).toFixed(1)} KB, ${totalElapsed}s, $${cost.total.toFixed(4)} cost (Claude $${cost.claude.usd.toFixed(4)} / Apify $${cost.apify.total.toFixed(4)})${lowYield ? ' [LOW YIELD]' : ''}`);
   } catch (e) {
     console.error('[pipeline error]', e);
     logAndSave(briefId, 'Pipeline failed: ' + e.message, 'err');
