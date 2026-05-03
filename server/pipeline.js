@@ -2111,57 +2111,11 @@ async function buildXlsx(brief, accepted, rejected, bp, timings) {
     });
   });
 
-  // 3. Brief context
-  const wsCtx = wb.addWorksheet('Brief context');
-  wsCtx.columns = [{ header: 'Field', key: 'k', width: 26 }, { header: 'Value', key: 'v', width: 80 }];
-  wsCtx.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
-  wsCtx.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E40AF' } };
-  const rows = [
-    ['Brief ID', brief.id],
-    ['Title', brief.title],
-    ['Mode', bp.searchMode === 'niche' ? 'Niche' : 'Standard'],
-    ['Keywords', bp.keywords.join('  |  ')],
-    ['Must include', bp.must.join('  |  ') || '—'],
-    ['Should include', bp.should.join('  |  ') || '—'],
-    ['Must NOT include', bp.mustNot.join('  |  ') || '—'],
-    ['Client company (excluded)', bp.clientCompany || '—'],
-    ['Client principal (excluded)', bp.clientPrincipal || '—'],
-    ['Custom exclusions', bp.customExclusions.join('  |  ') || '—'],
-    ['Default big-firm exclusions', DEFAULT_BIGFIRM_EXCLUSIONS.join(', ')],
-    ['Geo', brief.geo || 'India'],
-    ['Submitted at', brief.createdAt],
-    ['Submitted by', (brief.operator && brief.operator.name) || brief.submittedBy || '—'],
-    ['Steering / direction', brief.steering || '—'],
-    ['', ''],
-    ['INTERVIEW-TIME FIELDS', ''],
-    ['Email (Official)',          'Filled by sourcer during the interview call (Step 5 of the manual SOP). Marked "— (interview)" in the Candidates sheet.'],
-    ['Email (Personal)',          'Filled by sourcer during the interview call.'],
-    ['Mobile Number',             'Filled by sourcer during the interview call.'],
-    ['No. of Trainings Conducted','Filled by sourcer during the interview call (asked of the trainer).'],
-    ['Relevant Domain Trainings', 'Filled by sourcer during the interview call (asked of the trainer).'],
-    ['', ''],
-    ['STAGE TIMINGS (TAT)', ''],
-    ...timings.map(t => [t.stage, `${t.elapsed}s`]),
-    ['', ''],
-    ['SCORING WEIGHTS (searcher-tweakable)', ''],
-    ['Signal',       `0–${bp.advanced.weights.signal}`],
-    ['Bucket fit',   `0–${bp.advanced.weights.bucket}`],
-    ['Verify',       `0–${bp.advanced.weights.verify}`],
-    ['Book',         `0–${bp.advanced.weights.book}`],
-    ['', ''],
-    ['SIGNAL DEFINITIONS', ''],
-    ['TRAINER_EXPLICIT',  'Bio explicitly says trainer/instructor + delivery evidence (max signal)'],
-    ['FREELANCE_TRAINER', 'Independent + explicit training-delivery'],
-    ['TRAINER_IMPLIED',   'Founder/Principal/Consultant at small firm — niche-domain bookable'],
-    ['INSTITUTE',         'Training institute / firm'],
-    ['PRACTITIONER',      'Has skill, no teaching artefact'],
-    ['SPEAKER_ONLY',      'Conference/keynote ONLY → REJECTED (per SOP)'],
-    ['BIG_FIRM',          'Tech M / Wipro / etc / client / principal → REJECTED'],
-    ['NON_INDIA',         'Location not India → REJECTED'],
-    ['MUSTNOT_HIT',       'Hit one of your must-NOT terms → REJECTED'],
-  ];
-  rows.forEach(r => wsCtx.addRow({ k: r[0], v: r[1] }));
-  wsCtx.eachRow(r => r.alignment = { vertical: 'top', wrapText: true });
+  // v3.25.0 — "Brief context" Excel sheet removed. Held signal-definitions
+  // and stage timings + interview-time field explanations. Educational but
+  // never read in practice; same context is on the brief detail page.
+  // Excel now has 3 sheets: Candidates + Engineering details + Rejected (audit),
+  // plus an optional Lab providers sheet when Phase 3d found anything.
 
   const file = path.join(OUTPUT_DIR, brief.id + '.xlsx');
   await wb.xlsx.writeFile(file);
@@ -2671,17 +2625,11 @@ async function runPipeline(briefId, opts = {}) {
       stop();
     }
 
-    // ---- PHASE 3b: Indian training institutes (Niche + still thin) ----
-    if (!previewMode && bp.searchMode === 'niche' && normalised.length < 8 && hasLlmClient()) {
-      const stop = stageStart('Phase 3b: Institutes');
-      for (const kw of bp.keywords) {
-        const inst = await claudeInstitutes(briefId, kw, bp);
-        logAndSave(briefId, `[Phase 3b] Institutes for "${kw}" → ${inst.length}`);
-        allItems = allItems.concat(inst);
-      }
-      normalised = dedupeItems(allItems.map(normaliseItem));
-      stop();
-    }
+    // v3.25.0 — Phase 3b (institutes) removed. Rarely fired (only when niche
+    // mode AND <8 candidates), and Phase 3c (founders/principals at small
+    // firms) covers the same gap with higher signal — the founders ARE the
+    // institute decision-makers. claudeInstitutes() retained in case we want
+    // it back later, just not called from the pipeline.
 
     // ---- PHASE 3c: founders / principals at small Indian firms (v3.9.0) ----
     // Ramesh's Phase 3 final leg from the call: "alternative people — founders,
