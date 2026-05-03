@@ -72,14 +72,14 @@ app.get('/healthz', (req, res) => {
   res.json({
     ok: true,
     ts: new Date().toISOString(),
-    version: '3.19.0',
+    version: '3.20.0',
     uptimeSec: Math.round((Date.now() - _bootedAt) / 1000),
     storage: process.env.DATABASE_URL ? 'postgres' : 'filesystem',
     dirty,
     llm: process.env.ANTHROPIC_VIA_CLAUDE_CLI === 'true' ? 'claude-cli' : (process.env.ANTHROPIC_API_KEY ? 'api' : 'disabled'),
     cliQueue,
     perplexity: { configured: hasPerplexity() },
-    apify: apifyPool.status(),  // v3.19.0 — per-account pool balances (cached, refresh in background)
+    apify: apifyPool.status(),  // v3.20.0 — per-account pool balances (cached, refresh in background)
   });
 });
 
@@ -252,7 +252,7 @@ app.post('/api/briefs/ask-questions', auth.requireAuth, async (req, res) => {
   if (!client) {
     return res.status(503).json({ error: 'Requires ANTHROPIC_VIA_CLAUDE_CLI=true or ANTHROPIC_API_KEY' });
   }
-  const sys = `You are a sourcing assistant for an Indian B2B trainer-placement firm. Given a partial brief draft, generate up to 15 clarifying MULTI-CHOICE questions to refine the search. Focus on fields that are MISSING or AMBIGUOUS in the draft. Skip fields the operator already specified clearly.
+  const sys = `You are a sourcing assistant for an Indian B2B trainer-placement firm. Given a partial brief draft, generate up to 10 clarifying MULTI-CHOICE questions to refine the SEARCH. Focus on fields that are MISSING or AMBIGUOUS in the draft and that affect WHICH candidates surface. Skip fields the operator already specified clearly.
 
 Output ONLY a JSON array of question objects. Each: {"id":"kebab-case-id","question":"human-readable question","choices":[{"id":"kebab-id","label":"human label"}],"multiSelect":boolean}. Each question MUST have between 2 and 5 choices.
 
@@ -263,17 +263,15 @@ Question coverage to consider (skip if already specified, ask only if missing/am
 4. Specific Indian cities or anywhere in India
 5. Lab setup capability needed (yes/no/preferred)
 6. Multi-corporate-client experience required
-7. Online/remote vs in-person / hybrid
-8. Number of trainers needed
-9. Per-day rate band (₹15-25k / ₹25-40k / ₹40-60k / ₹60k+ / negotiable)
-10. Lead time / availability (this week / 2 weeks / 1 month / flexible)
-11. Industry vertical preference (BFSI / IT services / pharma / manufacturing / any)
-12. Languages preferred (English / Hindi / regional)
-13. Big-firm exclusion: any extras beyond default Tech-M/Wipro/Cognizant/HCL/Infy/TCS/Accenture/Capgemini
-14. Past customer companies to exclude (one-of-many existing clients)
-15. Content customization needed (off-the-shelf / lightly tailored / fully custom)
+7. Number of trainers needed
+8. Industry vertical preference (BFSI / IT services / pharma / manufacturing / any)
+9. Languages preferred (English / Hindi / regional)
+10. Big-firm exclusion: any extras beyond default Tech-M/Wipro/Cognizant/HCL/Infy/TCS/Accenture/Capgemini
+11. Past customer companies to exclude (one-of-many existing clients)
 
-Use multiSelect:true for questions where multiple answers make sense (cities, certifications, exclusions); false otherwise. Use natural human-friendly choice labels. NEVER ask about something the draft already specifies — the goal is to fill GAPS, not re-ask known answers.`;
+DO NOT ASK about: delivery mode (online/in-person/hybrid), per-day rate / budget, lead time / availability / urgency, or content customization. These are NEGOTIATED post-shortlist with the trainer directly — they don't change which candidates the search should surface, so asking about them only adds friction. Skip them entirely even if the draft is silent.
+
+Use multiSelect:true for questions where multiple answers make sense (cities, certifications, exclusions); false otherwise. Use natural human-friendly choice labels. NEVER ask about something the draft already specifies — the goal is to fill SEARCH-relevant GAPS, not re-ask known answers and not collect post-shortlist negotiation data.`;
 
   // Normalise the draft so parse-output and chat-input both work
   const normalized = {
@@ -464,7 +462,7 @@ app.delete('/api/persistent-exclusions/:id', auth.requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-/* ---------- Client lifecycle status (v3.19.0) ----------
+/* ---------- Client lifecycle status (v3.20.0) ----------
    PATCH /api/briefs/:id/client-status   { clientStatus, note? }
    Tracks the post-pipeline workflow: pending (default) → shared_with_client →
    candidate_booked / client_rejected / done_no_booking. Pipeline `status` stays
@@ -534,7 +532,7 @@ app.post('/api/briefs/:id/scores', auth.requireAuth, async (req, res) => {
   }
 });
 
-/* ---------- Candidate outreach (v3.19.0) ----------
+/* ---------- Candidate outreach (v3.20.0) ----------
    GET    /api/briefs/:id/outreach
    POST   /api/briefs/:id/outreach   { candidateUrl, candidateName, status, note?, by? }
    DELETE /api/briefs/:id/outreach   body or query: { candidateUrl }
@@ -620,7 +618,7 @@ app.use((err, req, res, next) => {
   reapOrphansOnBoot();
 
   app.listen(PORT, () => {
-    console.log(`RJP Sourcing Portal v3.19.0 listening on :${PORT}`);
+    console.log(`RJP Sourcing Portal v3.20.0 listening on :${PORT}`);
     console.log(`  Apify Google actor:   ${process.env.APIFY_GOOGLE_ACTOR || process.env.APIFY_ACTOR || 'apify~rag-web-browser'}`);
     console.log(`  Apify LinkedIn actor: ${process.env.APIFY_LINKEDIN_ACTOR || 'harvestapi/linkedin-profile-scraper'}`);
     console.log(`  LLM client:           ${process.env.ANTHROPIC_VIA_CLAUDE_CLI === 'true' ? 'claude CLI subprocess (Max plan)' : (process.env.ANTHROPIC_API_KEY ? 'API key' : 'DISABLED')}`);
