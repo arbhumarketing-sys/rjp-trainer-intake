@@ -71,7 +71,7 @@ app.get('/healthz', (req, res) => {
   res.json({
     ok: true,
     ts: new Date().toISOString(),
-    version: '3.17.0',
+    version: '3.18.0',
     uptimeSec: Math.round((Date.now() - _bootedAt) / 1000),
     storage: process.env.DATABASE_URL ? 'postgres' : 'filesystem',
     dirty,
@@ -462,7 +462,7 @@ app.delete('/api/persistent-exclusions/:id', auth.requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-/* ---------- Client lifecycle status (v3.17.0) ----------
+/* ---------- Client lifecycle status (v3.18.0) ----------
    PATCH /api/briefs/:id/client-status   { clientStatus, note? }
    Tracks the post-pipeline workflow: pending (default) → shared_with_client →
    candidate_booked / client_rejected / done_no_booking. Pipeline `status` stays
@@ -532,6 +532,48 @@ app.post('/api/briefs/:id/scores', auth.requireAuth, async (req, res) => {
   }
 });
 
+/* ---------- Candidate outreach (v3.18.0) ----------
+   GET    /api/briefs/:id/outreach
+   POST   /api/briefs/:id/outreach   { candidateUrl, candidateName, status, note?, by? }
+   DELETE /api/briefs/:id/outreach   body or query: { candidateUrl }
+   Status: not_contacted | emailed | called | replied | scheduled | confirmed | no_response */
+app.get('/api/briefs/:id/outreach', auth.requireAuth, async (req, res) => {
+  const b = store.get(req.params.id);
+  if (!b) return res.status(404).json({ error: 'not found' });
+  try {
+    const outreach = await store.getCandidateOutreach(req.params.id);
+    res.json({ outreach });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/briefs/:id/outreach', auth.requireAuth, async (req, res) => {
+  const b = store.get(req.params.id);
+  if (!b) return res.status(404).json({ error: 'not found' });
+  const body = req.body || {};
+  try {
+    const saved = await store.saveCandidateOutreach(
+      b.id,
+      String(body.candidateUrl  || '').slice(0, 500),
+      String(body.candidateName || '').slice(0, 200),
+      String(body.status        || '').toLowerCase(),
+      String(body.note          || '').slice(0, 1000),
+      String(body.by            || (req.user && req.user.team) || 'rjp-infotek').slice(0, 100),
+    );
+    res.json({ outreach: saved });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+app.delete('/api/briefs/:id/outreach', auth.requireAuth, async (req, res) => {
+  const b = store.get(req.params.id);
+  if (!b) return res.status(404).json({ error: 'not found' });
+  const url = String((req.body && req.body.candidateUrl) || req.query.candidateUrl || '');
+  if (!url) return res.status(400).json({ error: 'candidateUrl required (in body or query)' });
+  try {
+    const removed = await store.removeCandidateOutreach(b.id, url);
+    res.json({ ok: true, removed });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.delete('/api/briefs/:id/scores', auth.requireAuth, async (req, res) => {
   const b = store.get(req.params.id);
   if (!b) return res.status(404).json({ error: 'not found' });
@@ -576,7 +618,7 @@ app.use((err, req, res, next) => {
   reapOrphansOnBoot();
 
   app.listen(PORT, () => {
-    console.log(`RJP Sourcing Portal v3.17.0 listening on :${PORT}`);
+    console.log(`RJP Sourcing Portal v3.18.0 listening on :${PORT}`);
     console.log(`  Apify Google actor:   ${process.env.APIFY_GOOGLE_ACTOR || process.env.APIFY_ACTOR || 'apify~rag-web-browser'}`);
     console.log(`  Apify LinkedIn actor: ${process.env.APIFY_LINKEDIN_ACTOR || 'harvestapi/linkedin-profile-scraper'}`);
     console.log(`  LLM client:           ${process.env.ANTHROPIC_VIA_CLAUDE_CLI === 'true' ? 'claude CLI subprocess (Max plan)' : (process.env.ANTHROPIC_API_KEY ? 'API key' : 'DISABLED')}`);

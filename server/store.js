@@ -93,6 +93,23 @@ async function initPostgres() {
     );
     CREATE INDEX IF NOT EXISTS candidate_scores_brief_idx ON candidate_scores(brief_id);
     CREATE INDEX IF NOT EXISTS candidate_scores_score_idx ON candidate_scores(score);
+
+    -- v3.18.0 — outreach tracker. Mirrors candidate_scores schema. status =
+    -- not_contacted (default — never written) | emailed | called | replied |
+    -- scheduled | confirmed | no_response. Replaces RJP's external spreadsheet.
+    CREATE TABLE IF NOT EXISTS candidate_outreach (
+      id SERIAL PRIMARY KEY,
+      brief_id TEXT NOT NULL,
+      candidate_url TEXT NOT NULL,
+      candidate_name TEXT,
+      status TEXT NOT NULL,
+      note TEXT,
+      set_by TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(brief_id, candidate_url)
+    );
+    CREATE INDEX IF NOT EXISTS candidate_outreach_brief_idx ON candidate_outreach(brief_id);
+    CREATE INDEX IF NOT EXISTS candidate_outreach_status_idx ON candidate_outreach(status);
   `);
   // Hydrate caches.
   const r1 = await pool.query('SELECT id, data FROM briefs');
@@ -321,6 +338,66 @@ async function removeCandidateScore(briefId, candidateUrl) {
   }
 }
 
+/* ---------- Candidate outreach tracker (v3.18.0) ----------
+   Per-(brief, candidate) outreach status; replaces RJP's external tracking
+   spreadsheet. Re-setting the same (brief, url) overwrites the previous
+   status — operators can move a candidate forward (emailed → replied →
+   scheduled → confirmed) by clicking the new chip. */
+const VALID_OUTREACH_STATUSES = ['not_contacted', 'emailed', 'called', 'replied', 'scheduled', 'confirmed', 'no_response'];
+
+async function saveCandidateOutreach(briefId, candidateUrl, candidateName, status, note, setBy) {
+  if (!pool) return null;
+  const st = String(status || '').toLowerCase();
+  if (!VALID_OUTREACH_STATUSES.includes(st)) {
+    throw new Error(`Invalid outreach status "${status}" — must be one of: ${VALID_OUTREACH_STATUSES.join(', ')}`);
+  }
+  const url = String(candidateUrl || '').slice(0, 500);
+  if (!url) throw new Error('candidateUrl is required');
+  await pool.query(
+    `INSERT INTO candidate_outreach (brief_id, candidate_url, candidate_name, status, note, set_by)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT (brief_id, candidate_url)
+     DO UPDATE SET status = EXCLUDED.status, note = EXCLUDED.note, set_by = EXCLUDED.set_by, created_at = NOW()`,
+    [briefId, url, String(candidateName || '').slice(0, 200), st, String(note || '').slice(0, 1000), String(setBy || '').slice(0, 100)]
+  );
+  return { briefId, candidateUrl: url, candidateName, status: st, note, setBy, ts: new Date().toISOString() };
+}
+
+async function getCandidateOutreach(briefId) {
+  if (!pool) return [];
+  try {
+    const r = await pool.query(
+      'SELECT candidate_url, candidate_name, status, note, set_by, created_at FROM candidate_outreach WHERE brief_id = $1 ORDER BY created_at',
+      [briefId]
+    );
+    return r.rows.map(row => ({
+      candidateUrl: row.candidate_url,
+      candidateName: row.candidate_name,
+      status: row.status,
+      note: row.note,
+      setBy: row.set_by,
+      createdAt: row.created_at,
+    }));
+  } catch (e) {
+    console.warn('[store] getCandidateOutreach failed:', e.message);
+    return [];
+  }
+}
+
+async function removeCandidateOutreach(briefId, candidateUrl) {
+  if (!pool) return false;
+  try {
+    const r = await pool.query(
+      'DELETE FROM candidate_outreach WHERE brief_id = $1 AND candidate_url = $2',
+      [briefId, candidateUrl]
+    );
+    return r.rowCount > 0;
+  } catch (e) {
+    console.warn('[store] removeCandidateOutreach failed:', e.message);
+    return false;
+  }
+}
+
 /* v3.10.1 — cross-brief operator-verdict lookup. multiPassRerank uses this to
    pull Selected/Hold/Rejected verdicts from PRIOR briefs that share keywords
    or domain with the active brief. These accumulate into the rerank prompt as
@@ -472,6 +549,7 @@ module.exports = {
   addPersistentExclusion, getPersistentExclusions, removePersistentExclusion,
   // candidate scoring (v3.9.0)
   saveCandidateScore, getCandidateScores, removeCandidateScore,
+  saveCandidateOutreach, getCandidateOutreach, removeCandidateOutreach,
   // operator-verdict priors for cross-brief rerank biasing (v3.10.1)
   getOperatorVerdictsForBriefContext,
   // seed

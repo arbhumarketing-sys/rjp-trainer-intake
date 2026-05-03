@@ -226,6 +226,12 @@
   }
   .empty-side a { color: #1e40af; text-decoration: underline; }
 
+  /* v3.18.0 — outreach dropdown */
+  .outreach-sel {
+    padding: 3px 6px; border: 1px solid var(--line); border-radius: 4px;
+    font-size: 11.5px; background: #fff; color: var(--ink-1); min-width: 130px;
+  }
+
   /* v3.17.0 — client-lifecycle status chips */
   .cs-chip {
     display: inline-block; padding: 2px 8px; border-radius: 10px;
@@ -804,6 +810,11 @@ let state = {
   clarifyReqId: 0,           // bumped per request, used to drop stale responses
   // v3.9.0 — candidate scoring cache. { briefId: { candidateUrl: 'selected'|'hold'|'rejected' } }
   candidateScores: {},
+  // v3.18.0 — outreach tracker. Map keyed by briefId → { candidateUrl: status }.
+  // Mirrors candidateScores. Status: not_contacted | emailed | called | replied
+  // | scheduled | confirmed | no_response. Replaces RJP's external spreadsheet.
+  candidateOutreach: {},
+  outreachLoadedFor: null,
   scoresLoadedFor: null,     // briefId for which scores were last fetched (avoid re-fetching during polls)
   // v3.10.0 — chat-style input flow (replaces wizard as default for "+ New brief")
   chatStep: 1,               // 1=describe, 2=review parse, 3=clarifying questions, 4=submit
@@ -1362,6 +1373,71 @@ async function clearCandidateScore(briefId, candidateUrl) {
     renderMain();
     toast('Clear failed: ' + e.message, 'error');
   }
+}
+
+/* v3.18.0 — outreach tracker. Same shape as candidate scoring (load/set/clear)
+   so the candidates table can show a per-row dropdown alongside the verdict
+   buttons. Status moves a candidate forward through the outreach funnel. */
+const OUTREACH_LABELS = {
+  not_contacted: '— not contacted',
+  emailed:       '✉ Emailed',
+  called:        '📞 Called',
+  replied:       '↩ Replied',
+  scheduled:     '📅 Scheduled',
+  confirmed:     '✅ Confirmed',
+  no_response:   '… No response',
+};
+async function loadOutreachForBrief(briefId, force) {
+  if (!force && state.outreachLoadedFor === briefId) return state.candidateOutreach[briefId] || {};
+  state.outreachLoadedFor = briefId;
+  try {
+    const r = await api('GET', '/api/briefs/' + encodeURIComponent(briefId) + '/outreach');
+    const map = {};
+    for (const o of (r.outreach || [])) map[o.candidateUrl] = o.status;
+    state.candidateOutreach[briefId] = map;
+  } catch (e) {
+    console.warn('loadOutreachForBrief failed:', e.message);
+    state.candidateOutreach[briefId] = state.candidateOutreach[briefId] || {};
+  }
+  return state.candidateOutreach[briefId];
+}
+async function setCandidateOutreach(briefId, candidateUrl, candidateName, status) {
+  if (!candidateUrl) { toast('No URL on this row.', 'error'); return; }
+  state.candidateOutreach[briefId] = state.candidateOutreach[briefId] || {};
+  const prev = state.candidateOutreach[briefId][candidateUrl];
+  if (status === 'not_contacted') {
+    delete state.candidateOutreach[briefId][candidateUrl];
+    renderMain();
+    try {
+      await api('DELETE', '/api/briefs/' + encodeURIComponent(briefId) + '/outreach?candidateUrl=' + encodeURIComponent(candidateUrl));
+      toast('Outreach cleared.', 'success');
+    } catch (e) {
+      if (prev) state.candidateOutreach[briefId][candidateUrl] = prev;
+      renderMain(); toast('Save failed: ' + e.message, 'error');
+    }
+    return;
+  }
+  state.candidateOutreach[briefId][candidateUrl] = status;
+  renderMain();
+  try {
+    await api('POST', '/api/briefs/' + encodeURIComponent(briefId) + '/outreach', {
+      candidateUrl, candidateName: candidateName || '', status,
+      by: state.operator && state.operator.name ? state.operator.name : undefined,
+    });
+    toast('Outreach: ' + (OUTREACH_LABELS[status] || status), 'success');
+  } catch (e) {
+    if (prev) state.candidateOutreach[briefId][candidateUrl] = prev;
+    else delete state.candidateOutreach[briefId][candidateUrl];
+    renderMain(); toast('Save failed: ' + e.message, 'error');
+  }
+}
+function renderOutreachDropdown(briefId, candidateUrl, candidateName) {
+  if (!candidateUrl) return '';
+  const current = (state.candidateOutreach[briefId] || {})[candidateUrl] || 'not_contacted';
+  const opts = Object.keys(OUTREACH_LABELS).map(k =>
+    `<option value="${k}" ${k === current ? 'selected' : ''}>${esc(OUTREACH_LABELS[k])}</option>`
+  ).join('');
+  return `<select class="outreach-sel" data-url="${esc(candidateUrl)}" data-name="${esc(candidateName || '')}">${opts}</select>`;
 }
 
 function renderVerdictButtons(briefId, candidateUrl, candidateName) {
@@ -2786,7 +2862,7 @@ function renderDetail(m) {
         <th>Signal</th>
         <th>${mode === 'accept' ? 'Why accepted' : 'Why rejected'}</th>
         <th>Source</th>
-        ${mode === 'accept' ? '<th>Verdict <span style="font-weight:400;color:var(--ink-4);font-size:10.5px;">(client-grade)</span></th>' : ''}
+        ${mode === 'accept' ? '<th>Verdict <span style="font-weight:400;color:var(--ink-4);font-size:10.5px;">(client-grade)</span></th><th>Outreach</th>' : ''}
       </tr></thead>
       <tbody>
         ${rows.map((c, i) => `
@@ -2796,7 +2872,7 @@ function renderDetail(m) {
             <td><span class="signal-pill signal-${esc(c.signal || '')}">${esc((c.signal || '').replace(/_/g, ' '))}</span></td>
             <td style="color:var(--ink-2);font-size:12.5px;">${esc(c.decision_reason || c.reason || '')}</td>
             <td>${c.url ? `<a href="${esc(c.url)}" target="_blank" rel="noopener">link</a>` : '—'}</td>
-            ${mode === 'accept' ? `<td class="verdict-cell">${renderVerdictButtons(b.id, c.url || '', extractCandNameForBtn(c))}</td>` : ''}
+            ${mode === 'accept' ? `<td class="verdict-cell">${renderVerdictButtons(b.id, c.url || '', extractCandNameForBtn(c))}</td><td>${renderOutreachDropdown(b.id, c.url || '', extractCandNameForBtn(c))}</td>` : ''}
           </tr>
         `).join('')}
       </tbody>
@@ -2964,6 +3040,19 @@ function renderDetail(m) {
       if (state.activeBriefId === b.id && state.view === 'detail') renderMain();
     });
   }
+  // v3.18.0 — same idempotent kick-off for outreach state.
+  if (state.outreachLoadedFor !== b.id && (status === 'complete' || status === 'preview_ready')) {
+    loadOutreachForBrief(b.id).then(() => {
+      if (state.activeBriefId === b.id && state.view === 'detail') renderMain();
+    });
+  }
+
+  // v3.18.0 — outreach dropdown change handler
+  m.querySelectorAll('.outreach-sel').forEach(sel => {
+    sel.addEventListener('change', () => {
+      setCandidateOutreach(b.id, sel.dataset.url, sel.dataset.name, sel.value);
+    });
+  });
 
   // v3.9.0 — wire verdict buttons (Selected / Hold / Rejected)
   m.querySelectorAll('.verdict-btn').forEach(btn => {
