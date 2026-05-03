@@ -203,6 +203,29 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 11px; font-weight: 500; color: var(--ink-3);
   }
+  /* v3.15.0 — sidebar search + filter chips */
+  .sidebar-filter { padding: 0 4px 8px; display: flex; flex-direction: column; gap: 6px; }
+  .sidebar-filter input[type="search"] {
+    width: 100%; padding: 6px 9px; border: 1px solid var(--line); border-radius: 4px;
+    font-size: 12.5px; background: var(--bg); color: var(--ink-1);
+    box-sizing: border-box;
+  }
+  .sidebar-filter input[type="search"]:focus { outline: none; border-color: #1e40af; }
+  .sb-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .sb-chip {
+    padding: 3px 8px; border: 1px solid var(--line); background: transparent;
+    border-radius: 11px; font-size: 11px; color: var(--ink-2); cursor: pointer; line-height: 1.3;
+  }
+  .sb-chip:hover { background: var(--bg); }
+  .sb-chip.on { background: #1e40af; color: #fff; border-color: #1e40af; }
+  /* v3.13.0 header me-pill (was missing — chip used inline style only) */
+  .me-pill {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 4px 10px; border-radius: 11px; font-size: 12px;
+    background: #f1f5f9; color: #1e293b; border: 1px solid var(--line);
+  }
+  .empty-side a { color: #1e40af; text-decoration: underline; }
+
   .brief-list { display: flex; flex-direction: column; gap: 2px; }
   .brief-item {
     padding: 9px 10px;
@@ -835,6 +858,53 @@ function clearChatDraft() {
   try { localStorage.removeItem(CHAT_DRAFT_KEY); } catch (_) {}
 }
 
+/* v3.15.0 — sidebar filter state. Persisted across reloads so an operator
+   who lives in "Mine + Running" doesn't have to re-set the filter every
+   time. Filter is applied client-side against state.briefs. */
+const SIDEBAR_FILTER_KEY = 'rjp_sidebar_filter';
+function loadSidebarFilter() {
+  try {
+    const raw = localStorage.getItem(SIDEBAR_FILTER_KEY);
+    if (!raw) return { search: '', status: 'all', mine: false };
+    const f = JSON.parse(raw) || {};
+    return {
+      search: typeof f.search === 'string' ? f.search : '',
+      status: ['all','queued','discovery','scoring','complete','failed','preview'].includes(f.status) ? f.status : 'all',
+      mine:   !!f.mine,
+    };
+  } catch (_) { return { search: '', status: 'all', mine: false }; }
+}
+function saveSidebarFilter() {
+  try { localStorage.setItem(SIDEBAR_FILTER_KEY, JSON.stringify(state.sidebarFilter)); } catch (_) {}
+}
+function applySidebarFilter(briefs) {
+  const f = state.sidebarFilter || { search: '', status: 'all', mine: false };
+  const q = (f.search || '').trim().toLowerCase();
+  const myEmail = state.operator && state.operator.email ? state.operator.email.toLowerCase() : '';
+  return briefs.filter(b => {
+    if (f.status !== 'all') {
+      // 'discovery' chip catches in-flight statuses (discovery/scoring/queued/preview)
+      if (f.status === 'discovery') {
+        if (!['queued','discovery','scoring','preview','packaging'].includes(b.status)) return false;
+      } else if ((b.status || 'queued') !== f.status) {
+        return false;
+      }
+    }
+    if (f.mine && myEmail) {
+      const opEmail = (b.operator && b.operator.email || '').toLowerCase();
+      if (opEmail !== myEmail) return false;
+    }
+    if (q) {
+      const hay = [
+        b.title, b.domain, (b.keywords || []).join(' '),
+        b.id, b.operator && b.operator.name, b.operator && b.operator.email,
+      ].filter(Boolean).join(' ').toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
 /* v3.13.0 — first-visit identity prompt. Painless overlay; required to dismiss
    so we always have an audit trail. Re-shown when the user clicks Switch. */
 function showWelcomeModal() {
@@ -1083,6 +1153,16 @@ function renderShell() {
     <div class="layout">
       <aside class="sidebar">
         <div class="sidebar-section"><span>Past briefs</span><span class="count" id="sb-count">—</span></div>
+        <div class="sidebar-filter">
+          <input id="sb-search" type="search" placeholder="Search briefs (title, keyword, ID, operator)…" value="${esc((state.sidebarFilter && state.sidebarFilter.search) || '')}" />
+          <div class="sb-chips">
+            <button class="sb-chip" data-f="status" data-v="all">All</button>
+            <button class="sb-chip" data-f="status" data-v="discovery">Running</button>
+            <button class="sb-chip" data-f="status" data-v="complete">Complete</button>
+            <button class="sb-chip" data-f="status" data-v="failed">Failed</button>
+            ${state.operator ? `<button class="sb-chip" data-f="mine" data-v="toggle">Mine only</button>` : ''}
+          </div>
+        </div>
         <div class="brief-list" id="sb-list"></div>
       </aside>
       <main class="main" id="main"></main>
@@ -1090,6 +1170,30 @@ function renderShell() {
   `;
 }
 function wireShell() {
+  // v3.15.0 — sidebar search input + filter chips (debounced where helpful)
+  const sb = document.getElementById('sb-search');
+  if (sb) {
+    let t;
+    sb.addEventListener('input', (e) => {
+      clearTimeout(t);
+      const v = e.target.value;
+      t = setTimeout(() => {
+        state.sidebarFilter.search = v;
+        saveSidebarFilter();
+        renderSidebar();
+      }, 120);
+    });
+  }
+  document.querySelectorAll('.sb-chip').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const fk = btn.dataset.f, fv = btn.dataset.v;
+      if (fk === 'status') state.sidebarFilter.status = fv;
+      if (fk === 'mine')   state.sidebarFilter.mine = !state.sidebarFilter.mine;
+      saveSidebarFilter();
+      renderSidebar();
+    });
+  });
+
   // v3.13.0 — Switch identity link in the header chip. Clears stored operator
   // and re-shows the welcome modal so the next user can claim the session.
   const switchBtn = document.getElementById('btn-switch-op');
@@ -1290,12 +1394,31 @@ function renderSidebar() {
   const list = document.getElementById('sb-list');
   const count = document.getElementById('sb-count');
   if (!list) return;
-  count.textContent = state.briefs.length;
-  if (!state.briefs.length) {
+  // v3.15.0 — apply sidebar filter before render; show "X of Y" when filtered
+  const filtered = applySidebarFilter(state.briefs);
+  const total = state.briefs.length;
+  const f = state.sidebarFilter || { search: '', status: 'all', mine: false };
+  const isFiltered = f.search || f.status !== 'all' || f.mine;
+  count.textContent = isFiltered ? `${filtered.length} / ${total}` : total;
+
+  // Sync filter chip active states each render
+  document.querySelectorAll('.sb-chip').forEach(b => {
+    const fk = b.dataset.f, fv = b.dataset.v;
+    if (fk === 'status') b.classList.toggle('on', f.status === fv);
+    if (fk === 'mine')   b.classList.toggle('on', !!f.mine);
+  });
+
+  if (!total) {
     list.innerHTML = '<div class="empty-side">No briefs yet. Click <strong>+ New brief</strong> to start.</div>';
     return;
   }
-  list.innerHTML = state.briefs.map(b => {
+  if (!filtered.length) {
+    list.innerHTML = '<div class="empty-side">No briefs match the current filter. <a href="#" id="sb-clear">Clear filter</a></div>';
+    const clr = document.getElementById('sb-clear');
+    if (clr) clr.addEventListener('click', (e) => { e.preventDefault(); state.sidebarFilter = { search: '', status: 'all', mine: false }; saveSidebarFilter(); render(); });
+    return;
+  }
+  list.innerHTML = filtered.map(b => {
     const isActive = b.id === state.activeBriefId;
     const title = (b.title || '(untitled)').slice(0, 80);
     const sub = (b.domain || '—') + ' · ' + ((b.roles || []).length) + ' role' + ((b.roles || []).length === 1 ? '' : 's');
@@ -2881,6 +3004,9 @@ function toast(msg, kind) {
     state.chatOpName  = state.operator.name;
     state.chatOpEmail = state.operator.email;
   }
+
+  // v3.15.0 — hydrate sidebar filter so reload preserves user's narrowing
+  state.sidebarFilter = loadSidebarFilter();
 
   if (state.token) {
     try { await loadBriefs(); } catch (e) {}
