@@ -26,6 +26,7 @@ const auth = require('./auth');
 const store = require('./store');
 const { runPipeline, runWithFeedback, startWatchdog, reapOrphansOnBoot, OUTPUT_DIR, DEFAULT_BIGFIRM_EXCLUSIONS, clarifyInput } = require('./pipeline');
 const { hasPerplexity } = require('./perplexity-client');
+const { pool: apifyPool } = require('./apify-pool');
 
 let Anthropic = null;
 try { Anthropic = require('@anthropic-ai/sdk').default || require('@anthropic-ai/sdk'); } catch (_) {}
@@ -71,13 +72,14 @@ app.get('/healthz', (req, res) => {
   res.json({
     ok: true,
     ts: new Date().toISOString(),
-    version: '3.18.0',
+    version: '3.19.0',
     uptimeSec: Math.round((Date.now() - _bootedAt) / 1000),
     storage: process.env.DATABASE_URL ? 'postgres' : 'filesystem',
     dirty,
     llm: process.env.ANTHROPIC_VIA_CLAUDE_CLI === 'true' ? 'claude-cli' : (process.env.ANTHROPIC_API_KEY ? 'api' : 'disabled'),
     cliQueue,
     perplexity: { configured: hasPerplexity() },
+    apify: apifyPool.status(),  // v3.19.0 — per-account pool balances (cached, refresh in background)
   });
 });
 
@@ -462,7 +464,7 @@ app.delete('/api/persistent-exclusions/:id', auth.requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-/* ---------- Client lifecycle status (v3.18.0) ----------
+/* ---------- Client lifecycle status (v3.19.0) ----------
    PATCH /api/briefs/:id/client-status   { clientStatus, note? }
    Tracks the post-pipeline workflow: pending (default) → shared_with_client →
    candidate_booked / client_rejected / done_no_booking. Pipeline `status` stays
@@ -532,7 +534,7 @@ app.post('/api/briefs/:id/scores', auth.requireAuth, async (req, res) => {
   }
 });
 
-/* ---------- Candidate outreach (v3.18.0) ----------
+/* ---------- Candidate outreach (v3.19.0) ----------
    GET    /api/briefs/:id/outreach
    POST   /api/briefs/:id/outreach   { candidateUrl, candidateName, status, note?, by? }
    DELETE /api/briefs/:id/outreach   body or query: { candidateUrl }
@@ -618,12 +620,16 @@ app.use((err, req, res, next) => {
   reapOrphansOnBoot();
 
   app.listen(PORT, () => {
-    console.log(`RJP Sourcing Portal v3.18.0 listening on :${PORT}`);
+    console.log(`RJP Sourcing Portal v3.19.0 listening on :${PORT}`);
     console.log(`  Apify Google actor:   ${process.env.APIFY_GOOGLE_ACTOR || process.env.APIFY_ACTOR || 'apify~rag-web-browser'}`);
     console.log(`  Apify LinkedIn actor: ${process.env.APIFY_LINKEDIN_ACTOR || 'harvestapi/linkedin-profile-scraper'}`);
     console.log(`  LLM client:           ${process.env.ANTHROPIC_VIA_CLAUDE_CLI === 'true' ? 'claude CLI subprocess (Max plan)' : (process.env.ANTHROPIC_API_KEY ? 'API key' : 'DISABLED')}`);
     console.log(`  CLI semaphore:        max ${process.env.MAX_CONCURRENT_CLI || '2'} concurrent subprocesses`);
     console.log(`  Perplexity (L1.2):    ${hasPerplexity() ? `enabled (${process.env.PERPLEXITY_MODEL || 'sonar-pro'})` : 'DISABLED (set PERPLEXITY_API_KEY to enable)'}`);
+    const _poolNames = apifyPool.status().accounts.map(a => a.name).join(', ') || '(none — set APIFY_TOKEN or APIFY_TOKEN_*)';
+    console.log(`  Apify pool:           ${apifyPool.status().accountCount} account(s) [${_poolNames}]`);
+    // Kick off initial balance refresh so healthz isn't blank after boot
+    apifyPool.refresh(true).catch(e => console.warn('[boot] apify pool refresh failed:', e.message));
     console.log(`  Storage:              ${process.env.DATABASE_URL ? 'Postgres' : 'filesystem (./data, no persistence)'}`);
     console.log(`  Output dir:           ${process.env.OUTPUT_DIR || './outputs'}`);
     startWatchdog();

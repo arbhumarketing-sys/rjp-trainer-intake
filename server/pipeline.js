@@ -244,6 +244,12 @@ function briefRequiresLabs(bp) {
 // while disabled.
 const { perplexityChat, hasPerplexity } = require('./perplexity-client');
 
+// v3.19.0 — Apify multi-account rotation pool. Reads APIFY_TOKEN +
+// APIFY_TOKEN_STUDY/TRAINING/RAKHI from env, picks the account with most
+// headroom for each new brief, falls over when caps are hit. Combines free
+// tiers to ~$15-29 of monthly Apify budget without paid plans.
+const { pool: apifyPool } = require('./apify-pool');
+
 const OUTPUT_DIR = process.env.OUTPUT_DIR || path.join(__dirname, 'outputs');
 fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 
@@ -2521,12 +2527,22 @@ async function clarifyInput(brief, briefId) {
 async function runPipeline(briefId, opts = {}) {
   const brief = store.get(briefId);
   if (!brief) return;
-  const apifyToken = process.env.APIFY_TOKEN;
-  if (!apifyToken) {
-    store.update(briefId, { status: 'failed', error: 'APIFY_TOKEN not set' });
-    logAndSave(briefId, 'APIFY_TOKEN missing on server', 'err');
+  // v3.19.0 — pick the Apify account with most headroom from the pool.
+  // Replaces the single-token check; pool draws from APIFY_TOKEN +
+  // APIFY_TOKEN_STUDY/TRAINING/RAKHI (whichever are set).
+  if (!apifyPool.hasAccounts()) {
+    store.update(briefId, { status: 'failed', error: 'No Apify tokens configured (APIFY_TOKEN or APIFY_TOKEN_*)' });
+    logAndSave(briefId, 'No Apify tokens configured on server', 'err');
     return;
   }
+  const picked = await apifyPool.pickAccount();
+  if (!picked) {
+    store.update(briefId, { status: 'failed', error: 'All Apify accounts at cap — wait for cycle reset or top up' });
+    logAndSave(briefId, '[apify-pool] All accounts at cap. Brief cannot run.', 'err');
+    return;
+  }
+  const apifyAccountName = picked.name;
+  logAndSave(briefId, `[apify-pool] Using account "${apifyAccountName}" — $${picked.available.toFixed(2)} available`);
   const previewMode = !!opts.preview;
   const t0 = Date.now();
   const timings = [];
@@ -2578,7 +2594,7 @@ async function runPipeline(briefId, opts = {}) {
     logAndSave(briefId, `Pipeline starting — ${bp.searchMode.toUpperCase()} mode, ${bp.keywords.length} keyword(s)${previewMode ? ' [PREVIEW]' : ''}`);
     logAndSave(briefId, `Exclusions in effect: ${bp.exclusions.length} entries (default big-firms + custom + client/principal)`);
 
-    const apifyClient = new ApifyClient({ token: apifyToken });
+    const apifyClient = picked.client;
 
     // ---- PHASE 1: top-of-stack named trainers (Claude knowledge) — v3.9 framing ----
     // Ramesh's Phase 1: "the perfect match, the curated list at the top."
@@ -2976,6 +2992,7 @@ async function runPipeline(briefId, opts = {}) {
       iterationSummary,
       _prevTopNames: currentTopNames,
       cost,
+      apifyAccount: apifyAccountName,  // v3.19.0 — which pool account paid for this brief
     });
     clearCost(briefId);
     logAndSave(briefId, `Pipeline complete — ${capped.length} candidates, ${(stat.size / 1024).toFixed(1)} KB, ${totalElapsed}s, $${cost.total.toFixed(4)} cost (Claude $${cost.claude.usd.toFixed(4)} / Apify $${cost.apify.total.toFixed(4)})${lowYield ? ' [LOW YIELD]' : ''}`);
