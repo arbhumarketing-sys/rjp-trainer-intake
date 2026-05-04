@@ -1696,10 +1696,10 @@ function chatHeadline(step) {
 }
 function chatSub(step) {
   return ([
-    'Describe in plain English. Claude parses it and generates clarifying follow-ups (Perplexity-style).',
+    'Describe in plain English. The system parses it and generates clarifying follow-up questions.',
     'Edit any field if it\'s wrong. Then continue to follow-up questions.',
     'Click answers — they refine the search. All optional. Skip what doesn\'t apply.',
-    'Final review. Steering field shows the assembled CLARIFYING ANSWERS block that\'ll inform Sonnet rerank.',
+    'Final review. Steering field shows the assembled CLARIFYING ANSWERS block that\'ll inform the rerank.',
   ])[step - 1] || '';
 }
 
@@ -1744,7 +1744,7 @@ function renderChatStep1() {
 • 5 Splunk Cloud Observability trainers, India, exclude TCS, niche, freelance only
 • Need an SAP S/4HANA FICO consultant in Bengaluru with 12+ years and lab setup
 • Aurora PostgreSQL DBA — 3 trainers, by Friday, exclude HCL/Wipro">${esc(state.chatInput)}</textarea>
-        <div class="hint">Claude (Haiku) parses this into structured fields. You'll see the parse on the next step and can edit anything.</div>
+        <div class="hint">The system parses this into structured fields. You'll see the parse on the next step and can edit anything.</div>
       </div>
       <div class="panel-actions">
         <span style="color:var(--ink-3);font-size:12px;">${state.chatLoading ? 'Parsing…' : ''}</span>
@@ -2027,7 +2027,7 @@ function renderChatStep3() {
   if (!qs.length) {
     document.getElementById('chat-body').innerHTML = `
       <div class="panel">
-        <div class="hint">No clarifying questions generated — Claude thinks the draft is complete enough. Continuing to submit.</div>
+        <div class="hint">No clarifying questions generated — the draft is complete enough. Continuing to submit.</div>
         <div class="panel-actions">
           <button class="btn" id="btn-chat-back">← Back</button>
           <button class="btn primary" id="btn-chat-skip-q">Continue to submit →</button>
@@ -2253,7 +2253,7 @@ function renderDetail(m) {
   // Plus: preview / preview_ready for pre-flight.
   const stages = [
     { keys: ['queued'],                       name: 'Queued',      sub: 'Brief accepted' },
-    { keys: ['discovery', 'preview'],          name: 'Discovery',   sub: 'Claude L1 → Apify Google → LinkedIn enrichment' },
+    { keys: ['discovery', 'preview'],          name: 'Discovery',   sub: 'Web search across sources + LinkedIn enrichment' },
     { keys: ['scoring'],                       name: 'Scoring',     sub: 'Speaker-aware classifier + reason-traceable accept/reject' },
     { keys: ['packaging'],                     name: 'Packaging',   sub: 'Building Excel with Candidates + Rejected (audit) tabs' },
     { keys: ['complete', 'preview_ready'],     name: 'Done',        sub: 'Output ready' },
@@ -2359,10 +2359,6 @@ function renderDetail(m) {
         <div class="meta-cell"><span class="meta-label">Rejected</span><span class="meta-val" style="color:var(--bad);">${counts.rejected || 0}</span></div>
         <div class="meta-cell"><span class="meta-label">Status</span><span class="meta-val"><span class="status-pill status-${status}">${status}</span></span></div>
         <div class="meta-cell"><span class="meta-label">Exclusions</span><span class="meta-val" style="font-size:11.5px;">${exclusionList.length ? esc(exclusionList.slice(0, 3).join(', ')) + (exclusionList.length > 3 ? '…' : '') : 'default big-firm only'}</span></div>
-        ${b.cost ? `<div class="meta-cell" title="Claude $${b.cost.claude.usd.toFixed(4)} (${b.cost.claude.calls} calls, reported by CLI)\nApify $${b.cost.apify.total.toFixed(4)} (${b.cost.apify.google.queries} Google queries × $${b.cost.apify.google.ratePerQuery} + ${b.cost.apify.linkedin.profiles} LinkedIn profiles × $${b.cost.apify.linkedin.ratePerProfile})\nApify cost is estimated from rates; Claude cost is reported.">
-          <span class="meta-label">Cost</span>
-          <span class="meta-val" style="color:#1e40af;font-family:ui-monospace,Menlo,monospace;">$${b.cost.total.toFixed(4)}</span>
-        </div>` : ''}
         ${(isComplete || b.clientStatus) ? `<div class="meta-cell">
           <span class="meta-label">Client status</span>
           <span class="meta-val">
@@ -2373,14 +2369,6 @@ function renderDetail(m) {
           </span>
         </div>` : ''}
       </div>
-      ${b.cost ? `<div class="cost-breakdown">
-        <strong>Cost breakdown</strong> &middot;
-        Claude <code>$${b.cost.claude.usd.toFixed(4)}</code> (${b.cost.claude.calls} calls) &middot;
-        Apify <code>$${b.cost.apify.total.toFixed(4)}</code>
-        (Google ${b.cost.apify.google.queries} × $${b.cost.apify.google.ratePerQuery} = <code>$${b.cost.apify.google.usd.toFixed(4)}</code>,
-        LinkedIn ${b.cost.apify.linkedin.profiles} × $${b.cost.apify.linkedin.ratePerProfile} = <code>$${b.cost.apify.linkedin.usd.toFixed(4)}</code>)
-        <span style="color:var(--ink-3);">&middot; Apify cost is estimated from rates; Claude cost is reported by the CLI.</span>
-      </div>` : ''}
 
       <details class="panel" style="margin-top:14px;">
         <summary style="cursor:pointer;list-style:none;display:flex;align-items:baseline;gap:8px;">
