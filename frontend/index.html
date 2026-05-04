@@ -2188,6 +2188,7 @@ async function chatHandleSubmit() {
       operator: { name, email },
       // v3.26.0 — pass source toggles (operator-controlled in Step 2)
       advanced: { sources: p.sources || defaultSourceMap() },
+      rawInput: state.chatInput || '',
       // Chat flow already engaged the operator with question-driven refinement
       // — pipeline can skip its own auto-cleaner (no double-Haiku).
       confirmedClean: true,
@@ -2381,6 +2382,45 @@ function renderDetail(m) {
         <span style="color:var(--ink-3);">&middot; Apify cost is estimated from rates; Claude cost is reported by the CLI.</span>
       </div>` : ''}
 
+      <details class="panel" style="margin-top:14px;">
+        <summary style="cursor:pointer;list-style:none;display:flex;align-items:baseline;gap:8px;">
+          <h3 style="display:inline-block;margin:0;">Brief inputs</h3>
+          <span class="panel-sub">What ${esc((b.operator && b.operator.name) || 'the operator')} submitted · click to expand</span>
+        </summary>
+        <div style="margin-top:12px;display:grid;gap:10px;">
+          ${b.rawInput ? `<div>
+            <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--ink-3);margin-bottom:4px;">Original description</div>
+            <div style="font-size:13.5px;color:var(--ink-1);white-space:pre-wrap;background:var(--bg-2);border:1px solid var(--line);border-radius:6px;padding:10px 12px;line-height:1.55;">${esc(b.rawInput)}</div>
+          </div>` : `<div style="font-size:13px;color:var(--ink-3);font-style:italic;">Original description not captured (submitted before v3.28).</div>`}
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+            <div>
+              <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--ink-3);margin-bottom:4px;">Keywords searched</div>
+              <div style="font-size:13px;color:var(--ink-1);">${(b.keywords || []).length ? (b.keywords || []).map(k => `<span style="display:inline-block;background:#EFF6FF;color:#1D4ED8;border-radius:4px;padding:2px 7px;margin:2px 3px 2px 0;font-size:12.5px;">${esc(k)}</span>`).join('') : '<span style="color:var(--ink-3);">—</span>'}</div>
+            </div>
+            <div>
+              <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--ink-3);margin-bottom:4px;">Search mode</div>
+              <div style="font-size:13px;color:var(--ink-1);">${b.mode === 'niche' ? 'Niche (deep, smaller pool expected)' : 'Standard'}</div>
+            </div>
+          </div>
+          ${(b.must && b.must.length) ? `<div>
+            <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--ink-3);margin-bottom:4px;">Must-have</div>
+            <div style="font-size:13px;color:var(--ink-1);">${b.must.map(m => `<span style="display:inline-block;background:#F0FDF4;color:#15803D;border-radius:4px;padding:2px 7px;margin:2px 3px 2px 0;font-size:12.5px;">✓ ${esc(m)}</span>`).join('')}</div>
+          </div>` : ''}
+          ${(b.should && b.should.length) ? `<div>
+            <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--ink-3);margin-bottom:4px;">Nice-to-have</div>
+            <div style="font-size:13px;color:var(--ink-1);">${b.should.map(s => `<span style="display:inline-block;background:#FFFBEB;color:#92400E;border-radius:4px;padding:2px 7px;margin:2px 3px 2px 0;font-size:12.5px;">${esc(s)}</span>`).join('')}</div>
+          </div>` : ''}
+          ${(b.mustNot && b.mustNot.length) ? `<div>
+            <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--ink-3);margin-bottom:4px;">Must-not / Exclusions</div>
+            <div style="font-size:13px;color:var(--ink-1);">${b.mustNot.map(m => `<span style="display:inline-block;background:#FEF2F2;color:#B91C1C;border-radius:4px;padding:2px 7px;margin:2px 3px 2px 0;font-size:12.5px;">✗ ${esc(m)}</span>`).join('')}</div>
+          </div>` : ''}
+          ${b.steering ? `<div>
+            <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--ink-3);margin-bottom:4px;">Clarifying answers & steering</div>
+            <div style="font-size:13px;color:var(--ink-2);white-space:pre-wrap;background:var(--bg-2);border:1px solid var(--line);border-radius:6px;padding:10px 12px;line-height:1.55;">${esc(b.steering)}</div>
+          </div>` : ''}
+        </div>
+      </details>
+
       <details class="panel" ${(isComplete || status === 'failed') ? '' : 'open'}>
         <summary style="cursor:pointer;list-style:none;">
           <h3 style="display:inline-block;margin:0;">Pipeline progress</h3>
@@ -2449,10 +2489,6 @@ function renderDetail(m) {
           </div>
         </div>` : ''}
 
-      ${b.steering ? `<div class="panel" style="margin-top:14px;">
-        <h3>Specific direction & feedback history</h3>
-        <div style="font-size:13.5px;color:var(--ink-2);white-space:pre-wrap;">${esc(b.steering)}</div>
-      </div>` : ''}
 
 <!-- v3.22.0 — Roles-in-brief panel removed (only seed/legacy briefs use roles[]) -->
 

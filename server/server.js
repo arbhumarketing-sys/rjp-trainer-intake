@@ -127,6 +127,7 @@ function buildBriefFromRequest(body, user, idOverride) {
     advanced: typeof body.advanced === 'object' ? body.advanced : {},
     operator: typeof body.operator === 'object' ? body.operator : null,
     steering: String(body.steering || '').slice(0, 4000),
+    rawInput: String(body.rawInput || '').slice(0, 3000),
     // v3.6: operator already engaged with the clarify-endpoint diagnostic
     // panel and chose to proceed. Pipeline skips its own keyword auto-cleaner.
     confirmedClean: !!body.confirmedClean,
