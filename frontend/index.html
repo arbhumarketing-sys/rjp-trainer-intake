@@ -1637,7 +1637,10 @@ function renderSidebar() {
   list.innerHTML = filtered.map(b => {
     const isActive = b.id === state.activeBriefId;
     const title = (b.title || '(untitled)').slice(0, 80);
-    const sub = (b.domain || '—') + ' · ' + ((b.roles || []).length) + ' role' + ((b.roles || []).length === 1 ? '' : 's');
+    const accepted = (b.counts && b.counts.accepted != null) ? b.counts.accepted : null;
+    const rejected = (b.counts && b.counts.rejected != null) ? b.counts.rejected : null;
+    const countStr = (accepted != null && rejected != null) ? `${accepted}/${rejected}` : (accepted != null ? `${accepted}/—` : '—/—');
+    const sub = (b.domain || '—') + ' · ' + countStr;
     const csChip = (b.clientStatus && b.clientStatus !== 'pending')
       ? `<span class="cs-chip cs-mini cs-${b.clientStatus}">${esc(csLabel(b.clientStatus))}</span>`
       : '';
