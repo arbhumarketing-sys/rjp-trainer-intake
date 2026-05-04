@@ -2280,7 +2280,13 @@ function renderDetail(m) {
     <div class="tat-bar ${isComplete ? 'done' : (isOver ? 'over' : '')}">
       <span class="tat-dot"></span>
       <span><strong>${isComplete ? 'TAT' : 'TAT — live'}:</strong> ${formatDuration(tatElapsed)} ${isComplete ? '' : ' / ' + formatDuration(tatTarget) + ' target'} ${b.mode === 'niche' ? '(Niche)' : '(Standard)'} </span>
-      ${(b.timings || []).length ? '<span style="margin-left:auto;color:var(--ink-3);font-size:11.5px;">Stages: ' + b.timings.map(t => esc(t.stage) + ' ' + esc(t.elapsed) + 's').join(' · ') + '</span>' : ''}
+      ${(b.timings || []).length ? '<span style="margin-left:auto;color:var(--ink-3);font-size:11.5px;">Stages: ' + b.timings.map(t => {
+        const label = (t.stage || '')
+          .replace('Phase 1: Claude knowledge', 'Phase 1: Knowledge base')
+          .replace('Phase 1.2: Perplexity web', 'Phase 1.2: Live web probe')
+          .replace('Sonnet rerank', 'Ranking');
+        return esc(label) + ' ' + esc(t.elapsed) + 's';
+      }).join(' · ') + '</span>' : ''}
     </div>
   `;
 
@@ -2370,7 +2376,7 @@ function renderDetail(m) {
         </div>` : ''}
       </div>
 
-      <details class="panel" style="margin-top:14px;">
+      <details class="panel" style="margin-top:14px;" open>
         <summary style="cursor:pointer;list-style:none;display:flex;align-items:baseline;gap:8px;">
           <h3 style="display:inline-block;margin:0;">Brief inputs</h3>
           <span class="panel-sub">What ${esc((b.operator && b.operator.name) || 'the operator')} submitted · click to expand</span>

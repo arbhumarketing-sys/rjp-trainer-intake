@@ -2624,7 +2624,7 @@ async function runPipeline(briefId, opts = {}) {
     // Ramesh's Phase 1: "the perfect match, the curated list at the top."
     let allItems = [];
     if (!previewMode && hasLlmClient()) {
-      const stop = stageStart('Phase 1: Claude knowledge');
+      const stop = stageStart('Phase 1: Knowledge base');
       for (const kw of bp.keywords) {
         const items = await claudeKnowledgeCall(briefId, kw, bp);
         logAndSave(briefId, `[Phase 1] Claude knowledge for "${kw}" → ${items.length} candidates`);
@@ -2644,7 +2644,7 @@ async function runPipeline(briefId, opts = {}) {
     // skipped silently in the pipeline log when the key is unset, so this
     // ships safely ahead of key provisioning.
     if (!previewMode && hasPerplexity()) {
-      const stop = stageStart('Phase 1.2: Perplexity web');
+      const stop = stageStart('Phase 1.2: Live web probe');
       for (const kw of bp.keywords) {
         const items = await perplexityKnowledgeCall(briefId, kw, bp);
         logAndSave(briefId, `[Phase 1.2] Perplexity web for "${kw}" → ${items.length} candidates`);
@@ -2896,7 +2896,7 @@ async function runPipeline(briefId, opts = {}) {
     stopVerify();
 
     // ---- Multi-pass Sonnet rerank ----
-    const stopRerank = stageStart('Sonnet rerank');
+    const stopRerank = stageStart('Ranking');
     const accepted = await multiPassRerank(verified, brief, bp, briefId);
     stopRerank();
 
