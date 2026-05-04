@@ -47,7 +47,7 @@ const CLI_TIMEOUT_MS   = parseInt(process.env.CLAUDE_CLI_TIMEOUT_MS || '180000',
 // SDK (~50-100 MB resident) and competes with siblings for CPU. On Render
 // free tier (512 MB cap, shared CPU), more than 2-3 concurrent CLI calls
 // causes OOM-kill / page-swap, which manifests as 120s subprocess timeouts
-// and "claude CLI timed out" warnings in brief logs. This semaphore
+// and "LLM CLI timed out" warnings in brief logs. This semaphore
 // protects against that for both single-brief parallelism (e.g., classifier
 // concurrency) AND multi-brief parallelism (RJP submitting 2 briefs while
 // 1 is still running).
@@ -146,7 +146,7 @@ function _spawnClaudeCli({ model, system, prompt, timeoutMs }) {
     };
 
     const timer = setTimeout(() => {
-      const err = new Error(`claude CLI timed out after ${timeoutMs}ms`);
+      const err = new Error(`LLM CLI timed out after ${timeoutMs}ms`);
       err.status = 504;
       finish(err);
     }, timeoutMs);
@@ -161,7 +161,7 @@ function _spawnClaudeCli({ model, system, prompt, timeoutMs }) {
 
     proc.on('close', (code) => {
       if (code !== 0) {
-        const err = new Error(`claude CLI exit ${code}: stderr="${stderr.substring(0, 400)}" stdout="${stdout.substring(0, 400)}"`);
+        const err = new Error(`LLM CLI exit ${code}: stderr="${stderr.substring(0, 400)}" stdout="${stdout.substring(0, 400)}"`);
         err.status = 500;
         return finish(err);
       }
@@ -169,14 +169,14 @@ function _spawnClaudeCli({ model, system, prompt, timeoutMs }) {
       try {
         parsed = JSON.parse(stdout);
       } catch (e) {
-        const err = new Error(`claude CLI returned non-JSON output: ${stdout.substring(0, 200)}`);
+        const err = new Error(`LLM CLI returned non-JSON output: ${stdout.substring(0, 200)}`);
         err.status = 502;
         return finish(err);
       }
       // CLI signals errors via { is_error: true, result: "<msg>" }
       if (parsed.is_error) {
         const msg = parsed.result || 'unknown CLI error';
-        const err = new Error(`claude CLI error: ${msg}`);
+        const err = new Error(`LLM CLI error: ${msg}`);
         // Login-required → mimic 401 so health-watchdog records auth failure
         err.status = /login|auth|credential|not logged/i.test(msg) ? 401 : 500;
         err.cliResponse = parsed;
@@ -236,7 +236,7 @@ class ClaudeCliClient {
   async _createMessage(params) {
     const model      = params.model || this._model;
     if (!model) {
-      const e = new Error('claude-cli: model is required');
+      const e = new Error('LLM CLI: model is required');
       e.status = 400; throw e;
     }
     const system     = typeof params.system === 'string'

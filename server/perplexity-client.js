@@ -40,7 +40,7 @@ function hasPerplexity() {
 async function perplexityChat({ system, user, maxTokens, model, timeoutMs } = {}) {
   const apiKey = process.env.PERPLEXITY_API_KEY;
   if (!apiKey) {
-    const e = new Error('PERPLEXITY_API_KEY not set');
+    const e = new Error('Live web probe not configured');
     e.status = 401;
     throw e;
   }
@@ -68,7 +68,7 @@ async function perplexityChat({ system, user, maxTokens, model, timeoutMs } = {}
 
     if (!resp.ok) {
       const body = await resp.text().catch(() => '');
-      const e = new Error(`Perplexity ${resp.status}: ${body.slice(0, 300)}`);
+      const e = new Error(`Live web probe ${resp.status}: ${body.slice(0, 300)}`);
       e.status = resp.status;
       throw e;
     }

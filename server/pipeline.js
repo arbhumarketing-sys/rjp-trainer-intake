@@ -805,7 +805,7 @@ async function runGoogleQuery(client, q, briefId) {
         maxAttempts: 3,
         baseDelayMs: 2000,
         onRetry: (attempt, delay, err) => {
-          if (briefId) logAndSave(briefId, `[L1.3 retry] Apify Google attempt ${attempt} failed (${(err.message || 'unknown').slice(0, 80)}); retrying in ${Math.round(delay / 1000)}s`, 'warn');
+          if (briefId) logAndSave(briefId, `[L1.3 retry] Web search attempt ${attempt} failed (${(err.message || 'unknown').slice(0, 80)}); retrying in ${Math.round(delay / 1000)}s`, 'warn');
         },
       }
     );
@@ -816,7 +816,7 @@ async function runGoogleQuery(client, q, briefId) {
     );
     return (ds.items || []).map(it => ({ ...it, _q: q }));
   } catch (e) {
-    if (briefId) logAndSave(briefId, `[L1.3] Apify Google gave up after retries: ${(e.message || 'unknown').slice(0, 100)}`, 'warn');
+    if (briefId) logAndSave(briefId, `[L1.3] Web search gave up after retries: ${(e.message || 'unknown').slice(0, 100)}`, 'warn');
     console.warn('[google query failed]', q.query.slice(0, 60), '→', e.message);
     return [];
   }
@@ -893,7 +893,7 @@ async function enrichLinkedIn(client, urls, briefId) {
         maxAttempts: 3,
         baseDelayMs: 3000,
         onRetry: (attempt, delay, err) => {
-          if (briefId) logAndSave(briefId, `[harvestapi retry] enrichment attempt ${attempt} failed (${(err.message || 'unknown').slice(0, 80)}); retrying in ${Math.round(delay / 1000)}s`, 'warn');
+          if (briefId) logAndSave(briefId, `[LinkedIn retry] enrichment attempt ${attempt} failed (${(err.message || 'unknown').slice(0, 80)}); retrying in ${Math.round(delay / 1000)}s`, 'warn');
         },
       }
     );
@@ -920,7 +920,7 @@ async function enrichLinkedIn(client, urls, briefId) {
       };
     });
   } catch (e) {
-    if (briefId) logAndSave(briefId, `[harvestapi] enrichment gave up after retries: ${(e.message || 'unknown').slice(0, 100)}. Geo gate falls back to text scan — may rise NON_INDIA false rejects.`, 'warn');
+    if (briefId) logAndSave(briefId, `[LinkedIn] enrichment gave up after retries: ${(e.message || 'unknown').slice(0, 100)}. Geo gate falls back to text scan — may rise NON_INDIA false rejects.`, 'warn');
     console.warn('[linkedin enrichment failed]', e.message);
     return [];
   }
@@ -962,7 +962,7 @@ async function claudeKnowledgeCall(briefId, kw, bp) {
         maxAttempts: 2,
         baseDelayMs: 4000,
         onRetry: (attempt, delay, err) => {
-          if (briefId) logAndSave(briefId, `[L1.1 retry] Claude knowledge attempt ${attempt} for "${kw}" failed (status ${err.status || '?'}); retrying in ${Math.round(delay / 1000)}s`, 'warn');
+          if (briefId) logAndSave(briefId, `[L1.1 retry] Knowledge base attempt ${attempt} for "${kw}" failed (status ${err.status || '?'}); retrying in ${Math.round(delay / 1000)}s`, 'warn');
         },
       }
     );
@@ -975,7 +975,7 @@ async function claudeKnowledgeCall(briefId, kw, bp) {
       _claudeNote: p.evidence || '',
     })).filter(p => p.url || p.metadata.title);
   } catch (e) {
-    if (briefId) logAndSave(briefId, `[L1.1] Claude knowledge gave up for "${kw}" after retries: ${(e.message || '').slice(0, 100)}. Falling back to Google-only for this keyword.`, 'warn');
+    if (briefId) logAndSave(briefId, `[L1.1] Knowledge base gave up for "${kw}" after retries: ${(e.message || '').slice(0, 100)}. Falling back to web-search-only for this keyword.`, 'warn');
     console.warn('[claude L1.1]', e.message);
     return [];
   }
@@ -1001,7 +1001,7 @@ async function perplexityKnowledgeCall(briefId, kw, bp) {
         maxAttempts: 2,
         baseDelayMs: 4000,
         onRetry: (attempt, delay, err) => {
-          if (briefId) logAndSave(briefId, `[L1.2 retry] Perplexity attempt ${attempt} for "${kw}" failed (status ${err.status || '?'}); retrying in ${Math.round(delay / 1000)}s`, 'warn');
+          if (briefId) logAndSave(briefId, `[L1.2 retry] Live web probe attempt ${attempt} for "${kw}" failed (status ${err.status || '?'}); retrying in ${Math.round(delay / 1000)}s`, 'warn');
         },
       }
     );
@@ -1014,7 +1014,7 @@ async function perplexityKnowledgeCall(briefId, kw, bp) {
       _perplexitySource: p.source || '',
     })).filter(p => p.url || p.metadata.title);
   } catch (e) {
-    if (briefId) logAndSave(briefId, `[L1.2] Perplexity gave up for "${kw}" after retries: ${(e.message || '').slice(0, 100)}. Continuing to Phase 2.`, 'warn');
+    if (briefId) logAndSave(briefId, `[L1.2] Live web probe gave up for "${kw}" after retries: ${(e.message || '').slice(0, 100)}. Continuing to Phase 2.`, 'warn');
     console.warn('[perplexity L1.2]', e.message);
     return [];
   }
@@ -1447,7 +1447,7 @@ async function classifySignalsBatched(itemsWithHarvest, bp, briefId) {
     batches.push({ offset: i, items: itemsWithHarvest.slice(i, i + LLM_CLASSIFIER_BATCH_SIZE) });
   }
   const concurrency = Math.max(1, Math.min(LLM_CLASSIFIER_CONCURRENCY, batches.length));
-  if (briefId) logAndSave(briefId, `Classifier: LLM mode (Haiku), ${itemsWithHarvest.length} profiles in ${batches.length} batch(es) of ${LLM_CLASSIFIER_BATCH_SIZE}, concurrency=${concurrency}`);
+  if (briefId) logAndSave(briefId, `Classifier: LLM mode, ${itemsWithHarvest.length} profiles in ${batches.length} batch(es) of ${LLM_CLASSIFIER_BATCH_SIZE}, concurrency=${concurrency}`);
 
   const results = new Array(itemsWithHarvest.length);
   let nextBatch = 0;
@@ -1762,7 +1762,7 @@ async function multiPassRerank(accepted, brief, bp, briefId) {
 
   const top = accepted.slice(0, RERANK_TOP_N);
   const outputN = bp.advanced.qualityCap || QUALITY_CAP_DEFAULT;
-  if (briefId) logAndSave(briefId, `[rerank] Sonnet holistic rerank: top ${top.length} → top ${outputN}`);
+  if (briefId) logAndSave(briefId, `[rerank] Holistic rerank: top ${top.length} → top ${outputN}`);
 
   // v3.10.1 — Operator-verdict priors. Pull Selected/Hold/Rejected calls
   // from prior similar briefs and format as a few-shot block. Done BEFORE
@@ -1838,11 +1838,11 @@ Format: [{"i": <input index>, "why": "<≤18 word holistic judgment>"}, ...]`;
     }
 
     if (newTop.length === 0) {
-      if (briefId) logAndSave(briefId, `[rerank] Sonnet returned no usable rankings — keeping score-based order`, 'warn');
+      if (briefId) logAndSave(briefId, `[rerank] No usable rankings returned — keeping score-based order`, 'warn');
       return accepted;
     }
 
-    if (briefId) logAndSave(briefId, `[rerank] Sonnet returned ${newTop.length} ranked candidates (replaced score-based order for the top)`);
+    if (briefId) logAndSave(briefId, `[rerank] Returned ${newTop.length} ranked candidates (replaced score-based order for the top)`);
     return newTop;
   } catch (e) {
     if (briefId) logAndSave(briefId, `[rerank] failed (${(e.message || '').slice(0, 100)}) — keeping score-based order`, 'warn');
@@ -2089,7 +2089,7 @@ async function buildXlsx(brief, accepted, rejected, bp, timings) {
     { header: 'Score',                      key: 'score',    width: 7 },
     { header: 'Signal',                     key: 'signal',   width: 18 },
     { header: 'Decision reason',            key: 'why',      width: 40 },
-    { header: 'Sonnet rerank',              key: 'sonnet',   width: 40 },
+    { header: 'Ranking notes',              key: 'sonnet',   width: 40 },
     { header: 'Source URL (verifiable)',    key: 'src',      width: 40 },
     { header: 'Source snippet',             key: 'snip',     width: 60 },
     { header: 'Bucket fit',                 key: 'bf',       width: 9 },
@@ -2555,18 +2555,18 @@ async function runPipeline(briefId, opts = {}) {
   // Replaces the single-token check; pool draws from APIFY_TOKEN +
   // APIFY_TOKEN_STUDY/TRAINING/RAKHI (whichever are set).
   if (!apifyPool.hasAccounts()) {
-    store.update(briefId, { status: 'failed', error: 'No Apify tokens configured (APIFY_TOKEN or APIFY_TOKEN_*)' });
-    logAndSave(briefId, 'No Apify tokens configured on server', 'err');
+    store.update(briefId, { status: 'failed', error: 'Web search service not configured. Contact admin.' });
+    logAndSave(briefId, 'Web search service not configured on server (admin: contact ops)', 'err');
     return;
   }
   const picked = await apifyPool.pickAccount();
   if (!picked) {
-    store.update(briefId, { status: 'failed', error: 'All Apify accounts at cap — wait for cycle reset or top up' });
-    logAndSave(briefId, '[apify-pool] All accounts at cap. Brief cannot run.', 'err');
+    store.update(briefId, { status: 'failed', error: 'Web search quota exhausted. Wait for cycle reset or contact admin.' });
+    logAndSave(briefId, '[pool] All web-search accounts at cap. Brief cannot run.', 'err');
     return;
   }
   const apifyAccountName = picked.name;
-  logAndSave(briefId, `[apify-pool] Using account "${apifyAccountName}" — $${picked.available.toFixed(2)} available`);
+  logAndSave(briefId, `[pool] Using web-search account "${apifyAccountName}"`);
   const previewMode = !!opts.preview;
   const t0 = Date.now();
   const timings = [];
@@ -2627,7 +2627,7 @@ async function runPipeline(briefId, opts = {}) {
       const stop = stageStart('Phase 1: Knowledge base');
       for (const kw of bp.keywords) {
         const items = await claudeKnowledgeCall(briefId, kw, bp);
-        logAndSave(briefId, `[Phase 1] Claude knowledge for "${kw}" → ${items.length} candidates`);
+        logAndSave(briefId, `[Phase 1] Knowledge base for "${kw}" → ${items.length} candidates`);
         allItems = allItems.concat(items);
       }
       stop();
@@ -2647,12 +2647,12 @@ async function runPipeline(briefId, opts = {}) {
       const stop = stageStart('Phase 1.2: Live web probe');
       for (const kw of bp.keywords) {
         const items = await perplexityKnowledgeCall(briefId, kw, bp);
-        logAndSave(briefId, `[Phase 1.2] Perplexity web for "${kw}" → ${items.length} candidates`);
+        logAndSave(briefId, `[Phase 1.2] Live web probe for "${kw}" → ${items.length} candidates`);
         allItems = allItems.concat(items);
       }
       stop();
     } else if (!previewMode) {
-      logAndSave(briefId, `[Phase 1.2] skipped — set PERPLEXITY_API_KEY to enable live-web named-trainer search`, 'info');
+      logAndSave(briefId, `[Phase 1.2] skipped — live-web probe not configured`, 'info');
     }
 
     // ---- PHASE 2: keyword-combination expansion (Apify Google) — v3.9 framing ----
@@ -2763,7 +2763,7 @@ async function runPipeline(briefId, opts = {}) {
       // Index by canonical URL — harvestapi normalises in.linkedin.com → www.linkedin.com,
       // so the input URL and the response URL won't byte-match without canonLinkedinUrl.
       harvestMap = Object.fromEntries(harvested.map(h => [canonLinkedinUrl(h.url), h]));
-      logAndSave(briefId, `[harvestapi] enriched ${harvested.length} LinkedIn profiles`);
+      logAndSave(briefId, `[LinkedIn] enriched ${harvested.length} profiles`);
     }
     stopEnrich();
 
@@ -2955,7 +2955,7 @@ async function runPipeline(briefId, opts = {}) {
     let lowYieldReason = null;
     if (capped.length === 0) {
       if (normalised.length === 0) {
-        lowYieldReason = 'No candidates discovered from any source — Apify may have returned no results, or every tier failed (check log for retry warnings). Try broader keywords or check the Apify token.';
+        lowYieldReason = 'No candidates discovered from any source — web search may have returned no results, or every tier failed (check log for retry warnings). Try broader keywords or contact admin.';
       } else {
         lowYieldReason = `Discovered ${normalised.length} candidates but ALL were filtered out. Most common cause: too-strict must-NOT terms, or the geo gate rejecting non-LinkedIn-enriched profiles. Review the Rejected (audit) tab.`;
       }
@@ -3013,7 +3013,7 @@ async function runPipeline(briefId, opts = {}) {
       apifyAccount: apifyAccountName,  // v3.19.0 — which pool account paid for this brief
     });
     clearCost(briefId);
-    logAndSave(briefId, `Pipeline complete — ${capped.length} candidates, ${(stat.size / 1024).toFixed(1)} KB, ${totalElapsed}s, $${cost.total.toFixed(4)} cost (Claude $${cost.claude.usd.toFixed(4)} / Apify $${cost.apify.total.toFixed(4)})${lowYield ? ' [LOW YIELD]' : ''}`);
+    logAndSave(briefId, `Pipeline complete — ${capped.length} candidates, ${(stat.size / 1024).toFixed(1)} KB, ${totalElapsed}s${lowYield ? ' [LOW YIELD]' : ''}`);
   } catch (e) {
     console.error('[pipeline error]', e);
     logAndSave(briefId, 'Pipeline failed: ' + e.message, 'err');

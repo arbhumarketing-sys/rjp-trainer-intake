@@ -72,11 +72,11 @@ app.get('/healthz', (req, res) => {
   res.json({
     ok: true,
     ts: new Date().toISOString(),
-    version: '3.30.0',
+    version: '3.31.0',
     uptimeSec: Math.round((Date.now() - _bootedAt) / 1000),
     storage: process.env.DATABASE_URL ? 'postgres' : 'filesystem',
     dirty,
-    llm: process.env.ANTHROPIC_VIA_CLAUDE_CLI === 'true' ? 'claude-cli' : (process.env.ANTHROPIC_API_KEY ? 'api' : 'disabled'),
+    llm: (process.env.ANTHROPIC_VIA_CLAUDE_CLI === 'true' || process.env.ANTHROPIC_API_KEY) ? 'configured' : 'disabled',
     cliQueue,
     perplexity: { configured: hasPerplexity() },
     apify: apifyPool.status(),  // v3.27.0 — per-account pool balances (cached, refresh in background)
@@ -246,7 +246,7 @@ app.post('/api/briefs/ask-questions', auth.requireAuth, async (req, res) => {
   const draft = req.body || {};
   const client = makeLlmClient();
   if (!client) {
-    return res.status(503).json({ error: 'Requires ANTHROPIC_VIA_CLAUDE_CLI=true or ANTHROPIC_API_KEY' });
+    return res.status(503).json({ error: 'LLM service not configured. Contact admin.' });
   }
   const sys = `You are a sourcing assistant for an Indian B2B trainer-placement firm. Given a partial brief draft, generate up to 10 clarifying MULTI-CHOICE questions to refine the SEARCH. Focus on fields that are MISSING or AMBIGUOUS in the draft and that affect WHICH candidates surface. Skip fields the operator already specified clearly.
 
@@ -327,7 +327,7 @@ app.post('/api/briefs/parse', auth.requireAuth, async (req, res) => {
   if (!text) return res.status(400).json({ error: 'text required' });
   const client = makeLlmClient();
   if (!client) {
-    return res.status(503).json({ error: 'Free-text parsing requires ANTHROPIC_API_KEY or ANTHROPIC_VIA_CLAUDE_CLI=true (none set)' });
+    return res.status(503).json({ error: 'Free-text parsing service not configured. Contact admin.' });
   }
   try {
     const sys = `You parse one-line trainer-sourcing briefs into structured JSON. Output ONLY valid JSON with these keys: title (string), keywords (array), must (array), should (array), mustNot (array), clientCompany (string), customExclusions (array), searchMode ("std"|"niche"), deadline (string), notes (string).`;
