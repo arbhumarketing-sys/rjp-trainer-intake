@@ -1734,6 +1734,108 @@ function renderChat(m) {
   else if (state.chatStep === 4) renderChatStep4();
 }
 
+// v3.32.0 — Input quality check.
+// Runs at Step 2 (live, as user edits), Step 4 (final review), and Submit (hard guard).
+// Returns { blocking, warnings }: blocking issues block submission, warnings inform.
+// Designed from real client-run patterns: missing must-have, redundant keyword variants,
+// and generic single-word keywords account for ~all of the lowYield runs we've seen.
+function chatQualityCheck(p) {
+  const blocking = [];
+  const warnings = [];
+  const keywords = (p.keywords || []).filter(k => String(k || '').trim());
+  const must     = (p.must     || []).filter(k => String(k || '').trim());
+
+  if (must.length === 0) {
+    blocking.push({
+      title: 'Please add at least one must-have skill',
+      detail: 'A must-have is the single technical skill every accepted candidate must demonstrate. Without it, the system has no way to distinguish a real expert from someone who only looks the part — that has been the main reason recent runs have surfaced low-quality candidates.',
+      example: 'For "Splunk Observability Trainer" briefs, set must-have to: Splunk. For "NetBrain" briefs: NetBrain. For "Salesforce" briefs: Salesforce.',
+    });
+  }
+
+  if (keywords.length > 4) {
+    warnings.push({
+      title: `${keywords.length} keywords — consider trimming to 3 or 4`,
+      detail: 'Each keyword runs its own search, which adds time and cost. 3–4 sharp keywords usually beat 6 overlapping ones.',
+      example: 'If you have "X Trainer", "X Consultant", "X Expert", "X SME" — keep just "X Trainer". The ranking step already handles role variants automatically.',
+    });
+  }
+
+  const GENERIC = new Set(['trainer','consultant','expert','sme','india','indian','specialist','professional','developer','engineer','instructor','teacher','coach','architect']);
+  const genericMatches = keywords.filter(k => GENERIC.has(String(k || '').trim().toLowerCase()));
+  if (genericMatches.length) {
+    warnings.push({
+      title: `Generic keyword: "${genericMatches.join('", "')}"`,
+      detail: 'On its own, a single generic word matches almost any profile. The pipeline already adds "trainer" + "India" context to every search, so you don\'t need them as standalone keywords.',
+      example: 'Instead of "Trainer", try "Splunk Trainer". Instead of "India", drop it — geography is enforced at filter stage.',
+    });
+  }
+
+  const lowered = keywords.map(k => String(k || '').toLowerCase().trim());
+  const prefixGroups = {};
+  for (let i = 0; i < lowered.length; i++) {
+    const tokens = lowered[i].split(/\s+/);
+    if (tokens.length < 2) continue;
+    const prefix = tokens.slice(0, 2).join(' ');
+    if (!prefixGroups[prefix]) prefixGroups[prefix] = [];
+    prefixGroups[prefix].push(keywords[i]);
+  }
+  Object.entries(prefixGroups).forEach(([prefix, group]) => {
+    if (group.length >= 2) {
+      warnings.push({
+        title: `Overlapping keywords share "${prefix}"`,
+        detail: `These all target the same candidate pool: ${group.map(k => '"' + k + '"').join(', ')}. They\'ll find largely the same people while burning extra search quota.`,
+        example: 'Pick the strongest one — the rerank handles role variants like Trainer / Consultant / Expert.',
+      });
+    }
+  });
+
+  return { blocking, warnings };
+}
+
+function chatRenderQualityPanel() {
+  const { blocking, warnings } = chatQualityCheck(state.chatParsed || {});
+  if (!blocking.length && !warnings.length) {
+    return `<div id="chat-quality-panel" style="margin-top:14px;padding:10px 14px;background:#F0FDF4;border:1px solid #86EFAC;border-radius:6px;font-size:13px;color:#166534;display:flex;gap:8px;align-items:center;">
+      <span style="font-size:16px;">✓</span>
+      <span><strong>Looks good.</strong> Your inputs pass our quality checks — feel free to continue.</span>
+    </div>`;
+  }
+  let html = '<div id="chat-quality-panel" style="margin-top:14px;display:flex;flex-direction:column;gap:8px;">';
+  if (blocking.length) {
+    html += `<div style="font-size:11.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#7F1D1D;margin-bottom:-2px;">Required before continuing</div>`;
+  }
+  blocking.forEach(b => {
+    html += `<div style="padding:12px 14px;background:#FEF2F2;border:1px solid #FCA5A5;border-radius:6px;font-size:13px;color:#991B1B;">
+      <div style="display:flex;gap:8px;align-items:flex-start;">
+        <span style="font-size:16px;line-height:1;flex-shrink:0;">⚠</span>
+        <div style="flex:1;">
+          <div style="font-weight:600;margin-bottom:4px;">${esc(b.title)}</div>
+          <div style="color:#7F1D1D;line-height:1.5;margin-bottom:6px;">${esc(b.detail)}</div>
+          <div style="color:#7F1D1D;font-size:12px;font-style:italic;">${esc(b.example)}</div>
+        </div>
+      </div>
+    </div>`;
+  });
+  if (warnings.length) {
+    html += `<div style="font-size:11.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#92400E;margin-top:${blocking.length ? '4px' : '0'};margin-bottom:-2px;">Suggestions to improve results</div>`;
+  }
+  warnings.forEach(w => {
+    html += `<div style="padding:12px 14px;background:#FFFBEB;border:1px solid #FCD34D;border-radius:6px;font-size:13px;color:#92400E;">
+      <div style="display:flex;gap:8px;align-items:flex-start;">
+        <span style="font-size:16px;line-height:1;flex-shrink:0;">💡</span>
+        <div style="flex:1;">
+          <div style="font-weight:600;margin-bottom:4px;">${esc(w.title)}</div>
+          <div style="color:#78350F;line-height:1.5;margin-bottom:6px;">${esc(w.detail)}</div>
+          <div style="color:#78350F;font-size:12px;font-style:italic;">${esc(w.example)}</div>
+        </div>
+      </div>
+    </div>`;
+  });
+  html += '</div>';
+  return html;
+}
+
 function renderChatStep1() {
   const body = document.getElementById('chat-body');
   body.innerHTML = `
@@ -1897,6 +1999,8 @@ function renderChatStep2() {
         <div class="src-list">${sourceCheckboxes}</div>
       </details>
 
+      ${chatRenderQualityPanel()}
+
       <div class="panel-actions">
         <button class="btn" id="btn-chat-back">← Back</button>
         <button class="btn primary" id="btn-chat-questions" ${state.chatLoading ? 'disabled' : ''}>${state.chatLoading ? 'Generating questions…' : 'Continue to follow-ups →'}</button>
@@ -1982,6 +2086,17 @@ function renderChatStep2() {
     state.chatStep = 1; renderChat(document.getElementById('main'));
   });
   document.getElementById('btn-chat-questions').addEventListener('click', chatHandleAskQuestions);
+  // v3.32.0 — live quality panel updates as operator edits keywords / must-have
+  ['cp-keywords', 'cp-must'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('input', () => {
+      state.chatParsed.keywords = chatLinesToArr(document.getElementById('cp-keywords').value);
+      state.chatParsed.must     = chatLinesToArr(document.getElementById('cp-must').value);
+      const panel = document.getElementById('chat-quality-panel');
+      if (panel) panel.outerHTML = chatRenderQualityPanel();
+    });
+  });
 }
 
 function chatCollectStep2() {
@@ -2000,6 +2115,15 @@ function chatCollectStep2() {
 
 async function chatHandleAskQuestions() {
   chatCollectStep2();
+  // v3.32.0 — input quality gate. Blocking issues (like missing must-have)
+  // hold the operator on Step 2 until they fix it; warnings have already been
+  // surfaced inline so we let those through.
+  const qc = chatQualityCheck(state.chatParsed || {});
+  if (qc.blocking.length) {
+    toast(`Please fix the highlighted issue${qc.blocking.length > 1 ? 's' : ''} before continuing — see the red box above.`, 'error');
+    renderChatStep2();
+    return;
+  }
   state.chatLoading = true;
   renderChatStep2();
   try {
@@ -2120,6 +2244,8 @@ function renderChatStep4() {
         </div>
       </div>
 
+      ${chatRenderQualityPanel()}
+
       ${state.operator ? `
       <div style="margin-top:14px;padding:10px 12px;background:#f1f5f9;border-radius:4px;font-size:12.5px;color:#334155;">
         Submitting as <strong>${esc(state.operator.name)}</strong> · ${esc(state.operator.email)}
@@ -2162,6 +2288,16 @@ async function chatHandleSubmit() {
   const email = (state.chatOpEmail || '').trim();
   if (!name) { toast('Please enter operator name.', 'error'); return; }
   if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { toast('Please enter a valid email.', 'error'); return; }
+
+  // v3.32.0 — final input-quality guard. Blocking issues (e.g. missing must-have)
+  // stop the submit; the operator is sent back to Step 2 with the red box visible.
+  const qc = chatQualityCheck(state.chatParsed || {});
+  if (qc.blocking.length) {
+    toast(`Please add a must-have skill before submitting — see Step 2.`, 'error');
+    state.chatStep = 2;
+    renderChat(document.getElementById('main'));
+    return;
+  }
 
   // v3.13.0 — first chat-submit also captures identity for future briefs.
   // No-op if a stored operator already matches; harmless overwrite otherwise.
