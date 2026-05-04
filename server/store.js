@@ -409,6 +409,7 @@ async function removeCandidateOutreach(briefId, candidateUrl) {
 async function getOperatorVerdictsForBriefContext(currentBriefId, briefKeywords, briefDomain) {
   if (!pool) return [];
   try {
+    // v3.33.0 — exclude isTest briefs so internal/QA runs don't pollute priors.
     const r = await pool.query(`
       SELECT cs.brief_id, cs.candidate_url, cs.candidate_name, cs.score, cs.note, cs.created_at,
              b.data->>'title'    AS brief_title,
@@ -417,6 +418,7 @@ async function getOperatorVerdictsForBriefContext(currentBriefId, briefKeywords,
       FROM candidate_scores cs
       LEFT JOIN briefs b ON b.id = cs.brief_id
       WHERE cs.brief_id != $1
+        AND COALESCE(b.data->>'isTest', 'false') != 'true'
       ORDER BY cs.created_at DESC
       LIMIT 100
     `, [currentBriefId || '']);

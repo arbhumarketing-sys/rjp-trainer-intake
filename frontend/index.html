@@ -952,6 +952,8 @@ let state = {
   chatAnswers: {},           // { questionId: choiceId | [choiceId, ...] }
   chatOpName: '',
   chatOpEmail: '',
+  chatIsTest: null,          // v3.33.0 — null = use auto-detect; explicit true/false overrides
+
   // v3.13.0 — persistent operator identity. Hydrated on boot from localStorage
   // key 'rjp_operator'. When present, the wizard's Step 1 and the chat-flow's
   // Step 4 name+email inputs are hidden — submission auto-uses this identity.
@@ -1075,7 +1077,7 @@ function saveSidebarFilter() {
   try { localStorage.setItem(SIDEBAR_FILTER_KEY, JSON.stringify(state.sidebarFilter)); } catch (_) {}
 }
 function applySidebarFilter(briefs) {
-  const f = state.sidebarFilter || { search: '', status: 'all', mine: false };
+  const f = state.sidebarFilter || { search: '', status: 'all', mine: false, hideTests: false };
   const q = (f.search || '').trim().toLowerCase();
   const myEmail = state.operator && state.operator.email ? state.operator.email.toLowerCase() : '';
   return briefs.filter(b => {
@@ -1091,6 +1093,7 @@ function applySidebarFilter(briefs) {
       const opEmail = (b.operator && b.operator.email || '').toLowerCase();
       if (opEmail !== myEmail) return false;
     }
+    if (f.hideTests && b.isTest) return false;
     if (q) {
       const hay = [
         b.title, b.domain, (b.keywords || []).join(' '),
@@ -1330,6 +1333,7 @@ function renderShell() {
             <button class="sb-chip" data-f="status" data-v="complete">Complete</button>
             <button class="sb-chip" data-f="status" data-v="failed">Failed</button>
             ${state.operator ? `<button class="sb-chip" data-f="mine" data-v="toggle">Mine only</button>` : ''}
+            <button class="sb-chip" data-f="hidetests" data-v="toggle" title="Hide internal/QA test runs from the list">Hide tests</button>
           </div>
         </div>
         <div class="brief-list" id="sb-list"></div>
@@ -1365,6 +1369,7 @@ function wireShell() {
       const fk = btn.dataset.f, fv = btn.dataset.v;
       if (fk === 'status') state.sidebarFilter.status = fv;
       if (fk === 'mine')   state.sidebarFilter.mine = !state.sidebarFilter.mine;
+      if (fk === 'hidetests') state.sidebarFilter.hideTests = !state.sidebarFilter.hideTests;
       saveSidebarFilter();
       renderSidebar();
     });
@@ -1614,14 +1619,15 @@ function renderSidebar() {
   const filtered = applySidebarFilter(state.briefs);
   const total = state.briefs.length;
   const f = state.sidebarFilter || { search: '', status: 'all', mine: false };
-  const isFiltered = f.search || f.status !== 'all' || f.mine;
+  const isFiltered = f.search || f.status !== 'all' || f.mine || f.hideTests;
   count.textContent = isFiltered ? `${filtered.length} / ${total}` : total;
 
   // Sync filter chip active states each render
   document.querySelectorAll('.sb-chip').forEach(b => {
     const fk = b.dataset.f, fv = b.dataset.v;
-    if (fk === 'status') b.classList.toggle('on', f.status === fv);
-    if (fk === 'mine')   b.classList.toggle('on', !!f.mine);
+    if (fk === 'status')    b.classList.toggle('on', f.status === fv);
+    if (fk === 'mine')      b.classList.toggle('on', !!f.mine);
+    if (fk === 'hidetests') b.classList.toggle('on', !!f.hideTests);
   });
 
   if (!total) {
@@ -1644,8 +1650,9 @@ function renderSidebar() {
     const csChip = (b.clientStatus && b.clientStatus !== 'pending')
       ? `<span class="cs-chip cs-mini cs-${b.clientStatus}">${esc(csLabel(b.clientStatus))}</span>`
       : '';
-    return `<div class="brief-item ${isActive ? 'active' : ''}" data-id="${esc(b.id)}">
-      <span class="brief-item-title">${esc(title)}</span>
+    const testChip = b.isTest ? `<span style="display:inline-block;padding:1px 6px;background:#FEF3C7;color:#92400E;border-radius:3px;font-size:10px;font-weight:600;letter-spacing:0.04em;">TEST</span>` : '';
+    return `<div class="brief-item ${isActive ? 'active' : ''} ${b.isTest ? 'is-test' : ''}" data-id="${esc(b.id)}">
+      <span class="brief-item-title">${testChip} ${esc(title)}</span>
       <span class="brief-item-meta">
         <span>${esc(sub)}</span>
         <span class="status-pill status-${b.status || 'queued'}">${b.status || 'queued'}</span>${csChip}
@@ -1683,6 +1690,7 @@ function chatReset() {
   state.chatParsed = null;
   state.chatQuestions = [];
   state.chatAnswers = {};
+  state.chatIsTest = null;  // v3.33.0 — re-derive from auto-detect on next brief
   clearChatDraft(); // v3.14.0 — explicit reset wipes any saved draft too
 }
 
@@ -2246,6 +2254,22 @@ function renderChatStep4() {
 
       ${chatRenderQualityPanel()}
 
+      ${(() => {
+        // v3.33.0 — auto-detect test runs from title/operator. User can untick if wrong.
+        const titleLow = String(p.title || '').toLowerCase();
+        const opEmail = String((state.operator && state.operator.email) || state.chatOpEmail || '').toLowerCase();
+        const looksTest = /\b(test|iter\d|smoke|e2e|verify|qa|debug|sandbox)\b/i.test(titleLow) || /test|qa|e2e/i.test(opEmail);
+        const checked = (state.chatIsTest != null) ? state.chatIsTest : looksTest;
+        return `<div style="margin-top:14px;padding:10px 12px;background:${checked ? '#FFFBEB' : '#F8FAFC'};border:1px solid ${checked ? '#FCD34D' : '#E2E8F0'};border-radius:6px;font-size:13px;">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+            <input type="checkbox" id="chat-is-test" ${checked ? 'checked' : ''} style="margin:0;" />
+            <span><strong>${checked ? '⚙ Test / internal run' : 'Mark as test run'}</strong>
+              <span style="color:var(--ink-3);font-size:12px;margin-left:6px;">${checked ? '— excluded from cross-brief learning, separated in analytics' : '— check this for QA / debugging runs you don\'t want to influence real-brief priors'}</span>
+            </span>
+          </label>
+        </div>`;
+      })()}
+
       ${state.operator ? `
       <div style="margin-top:14px;padding:10px 12px;background:#f1f5f9;border-radius:4px;font-size:12.5px;color:#334155;">
         Submitting as <strong>${esc(state.operator.name)}</strong> · ${esc(state.operator.email)}
@@ -2275,6 +2299,14 @@ function renderChatStep4() {
   } else {
     document.getElementById('chat-op-name').addEventListener('input', e => state.chatOpName = e.target.value);
     document.getElementById('chat-op-email').addEventListener('input', e => state.chatOpEmail = e.target.value);
+  }
+  // v3.33.0 — test-flag toggle, with visual update on toggle
+  const testCb = document.getElementById('chat-is-test');
+  if (testCb) {
+    testCb.addEventListener('change', () => {
+      state.chatIsTest = testCb.checked;
+      renderChatStep4();
+    });
   }
   document.getElementById('btn-chat-back').addEventListener('click', () => {
     state.chatStep = state.chatQuestions.length ? 3 : 2;
@@ -2325,6 +2357,13 @@ async function chatHandleSubmit() {
       // v3.26.0 — pass source toggles (operator-controlled in Step 2)
       advanced: { sources: p.sources || defaultSourceMap() },
       rawInput: state.chatInput || '',
+      // v3.33.0 — derive isTest from the explicit toggle, falling back to auto-detect
+      isTest: (() => {
+        if (state.chatIsTest != null) return state.chatIsTest;
+        const titleLow = String(p.title || '').toLowerCase();
+        const opEmail = String(email || '').toLowerCase();
+        return /\b(test|iter\d|smoke|e2e|verify|qa|debug|sandbox)\b/i.test(titleLow) || /test|qa|e2e/i.test(opEmail);
+      })(),
       // Chat flow already engaged the operator with question-driven refinement
       // — pipeline can skip its own auto-cleaner (no double-Haiku).
       confirmedClean: true,
@@ -2622,7 +2661,18 @@ function renderDetail(m) {
 
 <!-- v3.22.0 — Roles-in-brief panel removed (only seed/legacy briefs use roles[]) -->
 
-      <div class="panel" style="margin-top:24px;border-color:var(--line);">
+      <div class="panel" style="margin-top:18px;border-color:var(--line);">
+        <h3 style="color:var(--ink-3);font-size:13px;font-weight:500;text-transform:uppercase;letter-spacing:0.04em;">Brief classification</h3>
+        <div class="panel-sub">Internal/QA briefs should be flagged so they don't pollute cross-brief learning or analytics. Toggle the flag below if this brief was a test.</div>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;margin-top:8px;">
+          <input type="checkbox" id="brief-is-test" data-bid="${esc(b.id)}" ${b.isTest ? 'checked' : ''} />
+          <span><strong>${b.isTest ? '⚙ Marked as test/internal run' : 'Mark as test/internal run'}</strong>
+            <span style="color:var(--ink-3);font-size:12px;margin-left:6px;">${b.isTest ? '— excluded from priors and analytics' : '— check to exclude this brief from cross-brief learning'}</span>
+          </span>
+        </label>
+      </div>
+
+      <div class="panel" style="margin-top:18px;border-color:var(--line);">
         <h3 style="color:var(--ink-3);font-size:13px;font-weight:500;text-transform:uppercase;letter-spacing:0.04em;">Danger zone</h3>
         <div class="panel-sub">Permanently delete this brief and its Excel output. Cannot be undone. Use only for test runs, mistakes, or briefs RJP no longer needs in the repository.</div>
         <button class="btn danger" id="btn-delete-brief">Delete this brief</button>
@@ -2705,6 +2755,27 @@ function renderDetail(m) {
       await loadBriefs(); startPolling(); renderMain(); renderSidebar();
       toast('Full pipeline running.', 'success');
     } catch (e) { toast(e.message, 'error'); fullBtn.disabled = false; fullBtn.textContent = 'Run full pipeline'; }
+  });
+
+  // v3.33.0 — test-flag toggle on detail page (backfill old briefs)
+  const testCb = document.getElementById('brief-is-test');
+  if (testCb) testCb.addEventListener('change', async () => {
+    const briefId = testCb.dataset.bid;
+    const newVal = testCb.checked;
+    testCb.disabled = true;
+    try {
+      await api('PATCH', '/api/briefs/' + encodeURIComponent(briefId) + '/test-flag', { isTest: newVal });
+      // mutate local cached brief so re-render reflects the new label
+      const cached = state.briefs.find(x => x.id === briefId);
+      if (cached) cached.isTest = newVal;
+      if (state.liveBrief && state.liveBrief.id === briefId) state.liveBrief.isTest = newVal;
+      toast(newVal ? 'Marked as test run — excluded from learning.' : 'Marked as real run.', 'success');
+      renderMain(); renderSidebar();
+    } catch (e) {
+      toast('Could not update flag: ' + e.message, 'error');
+      testCb.checked = !newVal;
+    }
+    testCb.disabled = false;
   });
 
   // v3.2 — danger zone delete handler

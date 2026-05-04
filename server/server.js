@@ -72,7 +72,7 @@ app.get('/healthz', (req, res) => {
   res.json({
     ok: true,
     ts: new Date().toISOString(),
-    version: '3.32.0',
+    version: '3.33.0',
     uptimeSec: Math.round((Date.now() - _bootedAt) / 1000),
     storage: process.env.DATABASE_URL ? 'postgres' : 'filesystem',
     dirty,
@@ -128,6 +128,9 @@ function buildBriefFromRequest(body, user, idOverride) {
     operator: typeof body.operator === 'object' ? body.operator : null,
     steering: String(body.steering || '').slice(0, 4000),
     rawInput: String(body.rawInput || '').slice(0, 3000),
+    // v3.33.0 — isTest flag separates internal/QA runs from real client briefs
+    // so they don't pollute cross-brief priors or aggregate analytics.
+    isTest: !!body.isTest,
     // v3.6: operator already engaged with the clarify-endpoint diagnostic
     // panel and chose to proceed. Pipeline skips its own keyword auto-cleaner.
     confirmedClean: !!body.confirmedClean,
@@ -395,6 +398,16 @@ app.get('/api/briefs/:id/output', auth.requireAuth, async (req, res) => {
    candidate_booked / client_rejected / done_no_booking. Pipeline `status` stays
    focused on engine state (queued/discovery/...complete); clientStatus tracks
    the human workflow on top of a complete brief. */
+// v3.33.0 — PATCH the isTest flag on an existing brief. Used to backfill old
+// internal QA briefs so they stop polluting priors and analytics.
+app.patch('/api/briefs/:id/test-flag', auth.requireAuth, (req, res) => {
+  const b = store.get(req.params.id);
+  if (!b) return res.status(404).json({ error: 'not found' });
+  const isTest = !!(req.body && req.body.isTest);
+  store.update(req.params.id, { isTest });
+  res.json({ ok: true, isTest });
+});
+
 const CLIENT_STATUS_VALUES = ['pending', 'shared_with_client', 'candidate_booked', 'client_rejected', 'done_no_booking'];
 app.patch('/api/briefs/:id/client-status', auth.requireAuth, (req, res) => {
   const b = store.get(req.params.id);
