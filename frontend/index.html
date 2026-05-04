@@ -2640,6 +2640,19 @@ function renderDetail(m) {
   const sample = b.previewSample || b.acceptedSample || [];
   const rejSample = b.previewRejected || b.rejectedSample || [];
 
+  // v3.36.0 — Render the "previously seen" chip when a candidate URL has a
+  // prior verdict on a different brief. Color matches the verdict.
+  const priorMap = b.priorVerdictMap || {};
+  const renderPriorChip = (url) => {
+    const pv = priorMap[url];
+    if (!pv) return '';
+    const colorMap = { Selected: { bg: '#DCFCE7', fg: '#166534', icon: '✓' }, Hold: { bg: '#FEF3C7', fg: '#92400E', icon: '⏸' }, Rejected: { bg: '#FEE2E2', fg: '#991B1B', icon: '✗' } };
+    const c = colorMap[pv.score] || { bg: '#E5E7EB', fg: '#374151', icon: '•' };
+    const ago = pv.daysAgo === 0 ? 'today' : pv.daysAgo === 1 ? '1d ago' : `${pv.daysAgo}d ago`;
+    const tooltip = `Previously seen on brief: ${pv.briefTitle || pv.briefId}\nVerdict: ${pv.score}\n${ago}${pv.note ? '\nNote: ' + pv.note : ''}`;
+    return `<div style="margin-top:4px;display:inline-block;padding:1px 7px;background:${c.bg};color:${c.fg};border-radius:3px;font-size:10.5px;font-weight:600;letter-spacing:0.02em;cursor:help;" title="${esc(tooltip)}">${c.icon} Previously ${esc(pv.score)} · ${esc(ago)}</div>`;
+  };
+
   const sampleTableHTML = (rows, mode) => rows.length ? `
     <table class="sample-table">
       <thead><tr>
@@ -2654,7 +2667,11 @@ function renderDetail(m) {
         ${rows.map((c, i) => `
           <tr>
             ${mode === 'accept' ? `<td>${i + 1}</td><td><strong>${c.score || 0}</strong></td>` : `<td>${i + 1}</td>`}
-            <td><div style="font-weight:500;">${esc((c.title || '').slice(0, 80))}</div><div style="color:var(--ink-3);font-size:11.5px;">${esc((c.text || '').slice(0, 140))}…</div></td>
+            <td>
+              <div style="font-weight:500;">${esc((c.title || '').slice(0, 80))}</div>
+              <div style="color:var(--ink-3);font-size:11.5px;">${esc((c.text || '').slice(0, 140))}…</div>
+              ${renderPriorChip(c.url || '')}
+            </td>
             <td><span class="signal-pill signal-${esc(c.signal || '')}">${esc((c.signal || '').replace(/_/g, ' '))}</span></td>
             <td style="color:var(--ink-2);font-size:12.5px;">${esc(c.decision_reason || c.reason || '')}</td>
             <td>${c.url ? `<a href="${esc(c.url)}" target="_blank" rel="noopener">link</a>` : '—'}</td>

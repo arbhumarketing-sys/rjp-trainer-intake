@@ -456,6 +456,57 @@ async function getOperatorVerdictsForBriefContext(currentBriefId, briefKeywords,
   }
 }
 
+/* v3.36.0 — Cross-brief candidate memory. Given a list of candidate URLs from
+   the active brief, returns any prior verdicts those same URLs received on
+   OTHER briefs. Used by the brief-detail GET to surface "previously seen"
+   chips per row, so RJP staff don't have to remember whether they already
+   reviewed a candidate. Excludes the active brief (you're seeing those
+   verdicts already inline) and isTest briefs (no value in showing test
+   verdicts on real briefs). Returns a map keyed by URL. */
+async function getPriorVerdictsByUrl(currentBriefId, urls) {
+  if (!pool) return {};
+  if (!Array.isArray(urls) || urls.length === 0) return {};
+  // Normalize and dedupe URLs
+  const cleanUrls = [...new Set(urls.map(u => String(u || '').trim()).filter(Boolean))];
+  if (!cleanUrls.length) return {};
+  try {
+    const r = await pool.query(`
+      SELECT cs.brief_id, cs.candidate_url, cs.candidate_name, cs.score, cs.note, cs.created_at,
+             b.data->>'title' AS brief_title,
+             COALESCE(b.data->>'isTest', 'false') AS is_test
+      FROM candidate_scores cs
+      LEFT JOIN briefs b ON b.id = cs.brief_id
+      WHERE cs.brief_id != $1
+        AND cs.candidate_url = ANY($2)
+        AND COALESCE(b.data->>'isTest', 'false') != 'true'
+      ORDER BY cs.created_at DESC
+    `, [currentBriefId || '', cleanUrls]);
+
+    // Group by URL — keep most recent verdict per URL (already ORDER BY DESC)
+    const map = {};
+    const now = Date.now();
+    for (const row of r.rows) {
+      const url = String(row.candidate_url || '').trim();
+      if (!url) continue;
+      if (map[url]) continue;  // first hit (most recent) wins
+      const ts = new Date(row.created_at).getTime();
+      const daysAgo = Math.max(0, Math.round((now - ts) / 86400000));
+      map[url] = {
+        briefId: row.brief_id,
+        briefTitle: row.brief_title || '',
+        score: row.score,         // 'Selected' | 'Hold' | 'Rejected'
+        candidateName: row.candidate_name || '',
+        note: row.note || '',
+        daysAgo,
+      };
+    }
+    return map;
+  } catch (e) {
+    console.warn('[store] getPriorVerdictsByUrl failed:', e.message);
+    return {};
+  }
+}
+
 /* ---------- Persistent exclusions (v3.2) ---------- */
 // Always-exclude terms that survive across all briefs. RJP adds InfraCloud,
 // AnalyticsVidhya, etc. once instead of typing them into customExclusions
@@ -554,6 +605,8 @@ module.exports = {
   saveCandidateOutreach, getCandidateOutreach, removeCandidateOutreach,
   // operator-verdict priors for cross-brief rerank biasing (v3.10.1)
   getOperatorVerdictsForBriefContext,
+  // cross-brief candidate memory (v3.36.0) — "previously seen" lookup by URL
+  getPriorVerdictsByUrl,
   // seed
   loadSeedIfFresh,
 };

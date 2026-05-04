@@ -72,7 +72,7 @@ app.get('/healthz', (req, res) => {
   res.json({
     ok: true,
     ts: new Date().toISOString(),
-    version: '3.35.0',
+    version: '3.36.0',
     uptimeSec: Math.round((Date.now() - _bootedAt) / 1000),
     storage: process.env.DATABASE_URL ? 'postgres' : 'filesystem',
     dirty,
@@ -152,10 +152,23 @@ app.post('/api/briefs', auth.requireAuth, (req, res) => {
   res.json({ brief: r.brief });
 });
 
-app.get('/api/briefs/:id', auth.requireAuth, (req, res) => {
+app.get('/api/briefs/:id', auth.requireAuth, async (req, res) => {
   const b = store.get(req.params.id);
   if (!b) return res.status(404).json({ error: 'not found' });
-  res.json({ brief: b });
+  // v3.36.0 — Cross-brief candidate memory: look up prior verdicts on the
+  // candidate URLs visible in this brief's accepted/rejected samples. Cheap
+  // single SQL query; gracefully degrades to empty map if Postgres is down.
+  const sampleUrls = []
+    .concat((b.acceptedSample || []).map(c => c && c.url).filter(Boolean))
+    .concat((b.rejectedSample || []).map(c => c && c.url).filter(Boolean))
+    .concat((b.previewSample  || []).map(c => c && c.url).filter(Boolean))
+    .concat((b.previewRejected|| []).map(c => c && c.url).filter(Boolean));
+  let priorVerdictMap = {};
+  if (sampleUrls.length) {
+    try { priorVerdictMap = await store.getPriorVerdictsByUrl(req.params.id, sampleUrls); }
+    catch (e) { console.warn('[server] priorVerdictMap lookup failed:', e.message); }
+  }
+  res.json({ brief: { ...b, priorVerdictMap } });
 });
 
 app.post('/api/briefs/:id/retry', auth.requireAuth, (req, res) => {
