@@ -953,6 +953,9 @@ let state = {
   chatOpName: '',
   chatOpEmail: '',
   chatIsTest: null,          // v3.33.0 — null = use auto-detect; explicit true/false overrides
+  chatCritique: null,        // v3.34.0 — { issues, confident_rewrites } from /api/briefs/critique
+  chatLoadingMessage: '',    // v3.34.0 — label for the loading meter (parse vs critique vs ask-questions)
+  chatLoadingEta: 6,         // v3.34.0 — estimated seconds for current loading state
 
   // v3.13.0 — persistent operator identity. Hydrated on boot from localStorage
   // key 'rjp_operator'. When present, the wizard's Step 1 and the chat-flow's
@@ -1844,6 +1847,69 @@ function chatRenderQualityPanel() {
   return html;
 }
 
+// v3.34.0 — Render the LLM critique panel. Shows confident rewrites with
+// Apply/Keep CTAs, plus any soft issues. When state.chatCritique is null,
+// returns empty string and the v3.32.0 static quality panel shows instead
+// (for blocking-only fallback when critique unavailable).
+function chatRenderCritiquePanel(crit) {
+  if (!crit) return '';
+  const rewrites = crit.confident_rewrites || [];
+  const issues   = crit.issues || [];
+  if (!rewrites.length && !issues.length) return '';
+
+  let html = '<div id="chat-critique-panel" style="margin-top:14px;display:flex;flex-direction:column;gap:10px;">';
+
+  if (rewrites.length) {
+    html += `<div style="padding:14px 16px;background:#EFF6FF;border:1px solid #93C5FD;border-radius:8px;">
+      <div style="display:flex;gap:10px;align-items:flex-start;">
+        <span style="font-size:18px;line-height:1;flex-shrink:0;">✨</span>
+        <div style="flex:1;">
+          <div style="font-weight:600;color:#1E3A8A;margin-bottom:6px;font-size:14px;">We've sharpened your inputs based on what you wrote</div>
+          <div style="font-size:12.5px;color:#1E40AF;margin-bottom:10px;">${rewrites.length} suggested change${rewrites.length > 1 ? 's' : ''}, drawn from your description:</div>
+          <ul style="margin:0 0 12px 0;padding-left:0;list-style:none;font-size:13px;">`;
+    rewrites.forEach(rw => {
+      const oldDisplay = Array.isArray(rw.oldValue) ? (rw.oldValue.join(', ') || '(empty)') : String(rw.oldValue || '(empty)');
+      const newDisplay = Array.isArray(rw.newValue) ? (rw.newValue.join(', ') || '(empty)') : String(rw.newValue || '(empty)');
+      html += `<li style="margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid #DBEAFE;">
+        <div style="font-weight:500;color:#1E3A8A;margin-bottom:3px;font-size:12px;text-transform:uppercase;letter-spacing:0.04em;">${esc(rw.field)}</div>
+        <div style="margin-bottom:4px;"><span style="color:#7F1D1D;text-decoration:line-through;font-size:13px;">${esc(oldDisplay)}</span> <span style="color:#1E40AF;font-size:13px;">→</span> <span style="color:#15803D;font-weight:600;font-size:13px;">${esc(newDisplay)}</span></div>
+        <div style="font-size:12px;color:#4C5563;font-style:italic;line-height:1.5;">${esc(rw.reason || '')}</div>
+      </li>`;
+    });
+    html += `</ul>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="btn primary" id="btn-critique-apply" style="background:#1E40AF;border-color:#1E40AF;">✓ Apply ${rewrites.length} change${rewrites.length > 1 ? 's' : ''} & continue</button>
+            <button class="btn" id="btn-critique-keep">Keep mine as-is & continue</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  issues.forEach(iss => {
+    const isBlock = iss.severity === 'block';
+    const bgColor = isBlock ? '#FEF2F2' : '#FFFBEB';
+    const borderColor = isBlock ? '#FCA5A5' : '#FCD34D';
+    const titleColor = isBlock ? '#991B1B' : '#92400E';
+    const detailColor = isBlock ? '#7F1D1D' : '#78350F';
+    const icon = isBlock ? '⚠' : '💡';
+    const tag = isBlock ? 'Required' : 'Suggestion';
+    html += `<div style="padding:12px 14px;background:${bgColor};border:1px solid ${borderColor};border-radius:6px;font-size:13px;color:${titleColor};">
+      <div style="display:flex;gap:8px;align-items:flex-start;">
+        <span style="font-size:16px;line-height:1;flex-shrink:0;">${icon}</span>
+        <div style="flex:1;">
+          <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:2px;color:${titleColor};opacity:0.85;">${tag}</div>
+          <div style="font-weight:600;margin-bottom:3px;">${esc(iss.title || '')}</div>
+          <div style="color:${detailColor};line-height:1.5;">${esc(iss.message || '')}</div>
+        </div>
+      </div>
+    </div>`;
+  });
+
+  html += '</div>';
+  return html;
+}
+
 function renderChatStep1() {
   const body = document.getElementById('chat-body');
   body.innerHTML = `
@@ -2007,13 +2073,13 @@ function renderChatStep2() {
         <div class="src-list">${sourceCheckboxes}</div>
       </details>
 
-      ${chatRenderQualityPanel()}
+      ${state.chatCritique ? chatRenderCritiquePanel(state.chatCritique) : chatRenderQualityPanel()}
 
       <div class="panel-actions">
         <button class="btn" id="btn-chat-back">← Back</button>
-        <button class="btn primary" id="btn-chat-questions" ${state.chatLoading ? 'disabled' : ''}>${state.chatLoading ? 'Generating questions…' : 'Continue to follow-ups →'}</button>
+        <button class="btn primary" id="btn-chat-questions" ${state.chatLoading ? 'disabled' : ''}>${state.chatLoading ? (state.chatLoadingMessage || 'Working…').replace(/…$/, '…') : 'Continue to follow-ups →'}</button>
       </div>
-      ${state.chatLoading ? renderLoadingMeter('Generating clarifying questions…', 10) : ''}
+      ${state.chatLoading ? renderLoadingMeter(state.chatLoadingMessage || 'Working…', state.chatLoadingEta || 6) : ''}
     </div>
   `;
   // v3.27.0 — source-toggle checkboxes. Three handlers: leaf, child, parent.
@@ -2094,17 +2160,76 @@ function renderChatStep2() {
     state.chatStep = 1; renderChat(document.getElementById('main'));
   });
   document.getElementById('btn-chat-questions').addEventListener('click', chatHandleAskQuestions);
+
+  // v3.34.0 — Critique panel buttons. Apply mutates state.chatParsed with the
+  // rewrites then proceeds; Keep proceeds with current values. Either way we
+  // clear the critique and go straight to ask-questions.
+  const applyBtn = document.getElementById('btn-critique-apply');
+  if (applyBtn) applyBtn.addEventListener('click', async () => {
+    const crit = state.chatCritique;
+    if (crit && Array.isArray(crit.confident_rewrites)) {
+      crit.confident_rewrites.forEach(rw => {
+        if (!rw || !rw.field) return;
+        const allowed = ['keywords', 'must', 'should', 'mustNot'];
+        if (!allowed.includes(rw.field)) return;
+        const val = Array.isArray(rw.newValue) ? rw.newValue : (rw.newValue ? [rw.newValue] : []);
+        state.chatParsed[rw.field] = val;
+      });
+      saveChatDraft();
+      toast(`Applied ${crit.confident_rewrites.length} improvement${crit.confident_rewrites.length > 1 ? 's' : ''}.`, 'success');
+    }
+    state.chatCritique = null;
+    chatProceedToAskQuestions();
+  });
+
+  const keepBtn = document.getElementById('btn-critique-keep');
+  if (keepBtn) keepBtn.addEventListener('click', () => {
+    state.chatCritique = null;
+    chatProceedToAskQuestions();
+  });
+
   // v3.32.0 — live quality panel updates as operator edits keywords / must-have
+  // (only when no critique is showing — critique takes precedence)
   ['cp-keywords', 'cp-must'].forEach(id => {
     const el = document.getElementById(id);
     if (!el) return;
     el.addEventListener('input', () => {
       state.chatParsed.keywords = chatLinesToArr(document.getElementById('cp-keywords').value);
       state.chatParsed.must     = chatLinesToArr(document.getElementById('cp-must').value);
-      const panel = document.getElementById('chat-quality-panel');
-      if (panel) panel.outerHTML = chatRenderQualityPanel();
+      // Live update only the static quality panel; critique stays as-is until next Continue click
+      if (!state.chatCritique) {
+        const panel = document.getElementById('chat-quality-panel');
+        if (panel) panel.outerHTML = chatRenderQualityPanel();
+      }
     });
   });
+}
+
+// v3.34.0 — Extracted from chatHandleAskQuestions so the critique-Apply / Keep
+// buttons can call it without re-running the critique pass.
+async function chatProceedToAskQuestions() {
+  state.chatLoading = true;
+  state.chatLoadingMessage = 'Generating clarifying questions…';
+  state.chatLoadingEta = 10;
+  renderChatStep2();
+  try {
+    const r = await api('POST', '/api/briefs/ask-questions', {
+      ...state.chatParsed,
+      raw: state.chatInput,
+    });
+    state.chatQuestions = r.questions || [];
+    state.chatAnswers = {};
+    state.chatLoading = false;
+    state.chatStep = 3;
+    saveChatDraft();
+    renderChat(document.getElementById('main'));
+  } catch (e) {
+    state.chatLoading = false;
+    toast('Question generation failed: ' + e.message + '. Skipping to submit.', 'error');
+    state.chatQuestions = [];
+    state.chatStep = 4;
+    renderChat(document.getElementById('main'));
+  }
 }
 
 function chatCollectStep2() {
@@ -2123,35 +2248,49 @@ function chatCollectStep2() {
 
 async function chatHandleAskQuestions() {
   chatCollectStep2();
-  // v3.32.0 — input quality gate. Blocking issues (like missing must-have)
-  // hold the operator on Step 2 until they fix it; warnings have already been
-  // surfaced inline so we let those through.
+  state.chatCritique = null;  // clear any stale critique from prior click
+
+  // v3.32.0 → v3.34.0 — Static quality check still serves as a fast-path
+  // BLOCKING gate (must.length===0). Soft warnings now come from the LLM
+  // critique pass instead.
   const qc = chatQualityCheck(state.chatParsed || {});
   if (qc.blocking.length) {
     toast(`Please fix the highlighted issue${qc.blocking.length > 1 ? 's' : ''} before continuing — see the red box above.`, 'error');
     renderChatStep2();
     return;
   }
+
+  // v3.34.0 — Run the critique pass: LLM compares raw input to parsed fields,
+  // returns confident_rewrites + issues. ~3-5s. Falls back gracefully on error.
   state.chatLoading = true;
+  state.chatLoadingMessage = 'Reviewing your inputs against your description…';
+  state.chatLoadingEta = 4;
   renderChatStep2();
   try {
-    const r = await api('POST', '/api/briefs/ask-questions', {
-      ...state.chatParsed,
-      raw: state.chatInput,
+    const cr = await api('POST', '/api/briefs/critique', {
+      rawInput: state.chatInput || '',
+      parsed: state.chatParsed,
     });
-    state.chatQuestions = r.questions || [];
-    state.chatAnswers = {};
     state.chatLoading = false;
-    state.chatStep = 3;
-    saveChatDraft();  // v3.14.0 — persist questions so reload doesn't burn another Haiku call
-    renderChat(document.getElementById('main'));
+    state.chatCritique = cr.critique || { issues: [], confident_rewrites: [] };
+    const hasRewrites = (state.chatCritique.confident_rewrites || []).length > 0;
+    const hasIssues   = (state.chatCritique.issues || []).length > 0;
+    if (hasRewrites || hasIssues) {
+      // Hold on Step 2 with critique panel rendered
+      renderChatStep2();
+      return;
+    }
+    // No issues, no rewrites — proceed silently to ask-questions
+    state.chatCritique = null;
   } catch (e) {
+    // Critique failed — log and proceed; never block the operator on a network/LLM error
+    console.warn('[critique] failed; proceeding without:', e.message);
     state.chatLoading = false;
-    toast('Question generation failed: ' + e.message + '. Skipping to submit.', 'error');
-    state.chatQuestions = [];
-    state.chatStep = 4;
-    renderChat(document.getElementById('main'));
+    state.chatCritique = null;
   }
+
+  // Critique was clean (or errored gracefully) — proceed
+  await chatProceedToAskQuestions();
 }
 
 function renderChatStep3() {

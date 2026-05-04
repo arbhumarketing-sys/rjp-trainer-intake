@@ -72,7 +72,7 @@ app.get('/healthz', (req, res) => {
   res.json({
     ok: true,
     ts: new Date().toISOString(),
-    version: '3.33.0',
+    version: '3.34.0',
     uptimeSec: Math.round((Date.now() - _bootedAt) / 1000),
     storage: process.env.DATABASE_URL ? 'postgres' : 'filesystem',
     dirty,
@@ -325,6 +325,52 @@ Use multiSelect:true for questions where multiple answers make sense (cities, ce
 });
 
 /* Free-text intake parser — Claude turns one-liner into structured brief */
+/* v3.34.0 — Parse prompt rewritten with constraints + worked examples.
+   The prior two-sentence prompt produced fragmented output: single-sentence
+   inputs got shattered into 5+ word-keywords, and prose phrases ended up in
+   must[] instead of crisp skill names. New prompt explicitly forbids those
+   patterns and shows good-vs-bad examples drawn from real bad runs. */
+const PARSE_SYSTEM_PROMPT = `You parse free-text trainer-sourcing briefs (typed by RJP staff in plain English, often pasted from WhatsApp / email / Word docs) into structured search input.
+
+Output ONLY valid JSON with these keys: title (string), keywords (array), must (array), should (array), mustNot (array), clientCompany (string), customExclusions (array), searchMode ("std"|"niche"), deadline (string), notes (string).
+
+CRITICAL RULES for \`keywords\` (drives Google searches downstream):
+- 1 to 4 entries MAX. Quality over quantity. Each keyword runs a separate web search — extras burn quota without adding signal.
+- Each keyword must be a COMPLETE searchable phrase (typically 2-5 words) capturing one coherent concept. NOT a fragment.
+- NEVER produce single generic nouns alone — like "trainer", "consultant", "expert", "tool", "implementation", "experts", "professional", "developer", "engineer", "specialist", "instructor", "India", "online", "freelance". They match anyone. The pipeline already adds "trainer India" context to every search — don't duplicate.
+- COMBINE fragmented concepts into one keyword. "implementation experts on Base.com" is ONE keyword: "Base.com implementation expert" — not five split words.
+- DO NOT pad with role variants. "Splunk Trainer" + "Splunk Consultant" + "Splunk Expert" + "Splunk SME" all hit the same pool — pick one. The downstream rerank handles role variants automatically.
+
+CRITICAL RULES for \`must\` (the hard filter — every accepted candidate must demonstrate this):
+- 1 to 3 entries. Each is a SINGLE crisp technical skill or product name (e.g., "Splunk", "WooCommerce", "Base.com", "AWS Aurora", "NetBrain").
+- NOT prose, NOT phrases. "ecommerce prior experience" → "ecommerce". "12+ years experience" → goes to should[], not must[].
+- If the brief mentions a specific product/platform, that's the must.
+
+\`should\` (nice-to-have): same crisp format. 0-3 entries. Soft signals like seniority years, side-skills, certifications.
+
+\`mustNot\`: terms that disqualify. Same crisp format.
+
+\`searchMode\`:
+- "niche" if: technology is rare/specialized (NetBrain, Snowflake DBA, very specific tools), OR brief explicitly says "freelance only", OR generic discovery is unlikely to surface enough specialists.
+- "std" otherwise.
+
+EXAMPLES:
+
+Input: "implementation experts on base.com tool — ecommerce prior experience is needed also"
+Output: { "title": "Base.com Implementation Expert with Ecommerce Background", "keywords": ["Base.com implementation expert"], "must": ["Base.com", "ecommerce"], "should": [], "mustNot": [], "searchMode": "niche", "notes": "Single coherent concept; Base.com is niche so niche mode." }
+
+Input: "5 Splunk Cloud Observability trainers, India, exclude TCS, niche, freelance only"
+Output: { "title": "Splunk Cloud Observability Trainers (Freelance, ex-TCS)", "keywords": ["Splunk Cloud Observability trainer"], "must": ["Splunk"], "should": ["Splunk Cloud", "Observability"], "mustNot": ["TCS"], "customExclusions": ["TCS"], "searchMode": "niche", "notes": "Freelance + niche tech → niche mode. 5 candidates wanted." }
+
+Input: "WooCommerce trainer with skils in in ecommerce pluggins experience"
+Output: { "title": "WooCommerce Trainer", "keywords": ["WooCommerce trainer"], "must": ["WooCommerce"], "should": ["ecommerce plugins"], "mustNot": [], "searchMode": "std", "notes": "" }
+
+Input: "Need an SAP S/4HANA FICO consultant in Bengaluru with 12+ years and lab setup"
+Output: { "title": "SAP S/4HANA FICO Consultant — Bengaluru, 12+yr, lab-equipped", "keywords": ["SAP S/4HANA FICO consultant"], "must": ["SAP S/4HANA", "FICO"], "should": ["12+ years experience", "lab access"], "mustNot": [], "searchMode": "std", "notes": "Bengaluru preferred but other India cities likely acceptable." }
+
+Input: "splunk trainer / consultant / expert / SME / observability architect"
+Output: { "title": "Splunk Observability Trainer / SME", "keywords": ["Splunk Observability trainer"], "must": ["Splunk"], "should": ["Observability"], "mustNot": [], "searchMode": "std", "notes": "Multiple role suffixes are noise — the rerank handles variants." }`;
+
 app.post('/api/briefs/parse', auth.requireAuth, async (req, res) => {
   const text = String((req.body && req.body.text) || '').slice(0, 2000).trim();
   if (!text) return res.status(400).json({ error: 'text required' });
@@ -333,13 +379,11 @@ app.post('/api/briefs/parse', auth.requireAuth, async (req, res) => {
     return res.status(503).json({ error: 'Free-text parsing service not configured. Contact admin.' });
   }
   try {
-    const sys = `You parse one-line trainer-sourcing briefs into structured JSON. Output ONLY valid JSON with these keys: title (string), keywords (array), must (array), should (array), mustNot (array), clientCompany (string), customExclusions (array), searchMode ("std"|"niche"), deadline (string), notes (string).`;
-    const user = `Parse this brief: "${text}"\nReturn the JSON only.`;
     const resp = await client.messages.create({
       model: process.env.CLAUDE_MODEL_FAST || 'claude-haiku-4-5-20251001',
-      max_tokens: 600,
-      system: sys,
-      messages: [{ role: 'user', content: user }],
+      max_tokens: 800,
+      system: PARSE_SYSTEM_PROMPT,
+      messages: [{ role: 'user', content: `Parse this brief into JSON:\n\n"""${text}"""\n\nReturn ONLY the JSON object.` }],
     });
     const out = (resp.content[0] && resp.content[0].text) || '';
     let parsed = {};
@@ -348,6 +392,115 @@ app.post('/api/briefs/parse', auth.requireAuth, async (req, res) => {
       if (m) parsed = JSON.parse(m[0]);
     } catch (_) {}
     res.json({ parsed, raw: out });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* v3.34.0 — Parse-critique pass. Operator clicks "Continue to follow-ups" on
+   Step 2. Backend compares the raw input to the (possibly hand-edited) parsed
+   fields and returns:
+     - confident_rewrites: high-confidence corrections (auto-apply with consent)
+     - issues: softer warnings to surface inline
+   Replaces the v3.32.0 static heuristics, which were patching around parser
+   bugs with hardcoded rules. With this pass + the rewritten parse prompt,
+   the operator gets contextual, polite, brief-specific feedback. */
+const CRITIQUE_SYSTEM_PROMPT = `You are a search-quality reviewer for a trainer-sourcing pipeline. The operator wrote a free-text brief; our parser extracted structured fields. Sometimes operators edit the fields after parsing.
+
+Your job: given the raw input AND the current parsed fields, identify SPECIFIC problems and propose CORRECTIONS. Be polite, concise, and concrete. Reference the operator's exact words where possible.
+
+Output ONLY valid JSON with this shape:
+{
+  "issues": [
+    { "type": "fragmentation"|"redundancy"|"generic"|"missing_must"|"prose_must"|"off_target"|"thin_market", "severity": "block"|"warn"|"info", "title": "short headline", "message": "1-2 sentence polite explanation", "field": "keywords"|"must"|"should"|"mustNot"|"" }
+  ],
+  "confident_rewrites": [
+    { "field": "keywords"|"must"|"should"|"mustNot", "oldValue": [...], "newValue": [...], "reason": "1-sentence rationale grounded in the operator's raw text" }
+  ]
+}
+
+RULES for issues:
+- Use "block" severity ONLY for: missing must-have entirely.
+- Use "warn" for: 5+ keywords, redundant variants, prose-shaped must-haves, generic single-noun keywords, off-target keywords (don't match raw input).
+- Use "info" for: market-thinness signals worth noting, edge cases.
+
+RULES for confident_rewrites:
+- Only include corrections you are >=85% confident in.
+- newValue must improve on oldValue based on the raw input.
+- For fragmented keywords: combine into ONE coherent phrase.
+- For redundant role variants: keep the strongest one.
+- For prose must-haves: extract the crisp skill term.
+
+EXAMPLES:
+
+Raw: "implementation experts on base.com tool — ecommerce prior experience is needed also"
+Parsed keywords: ["base.com", "implementation", "ecommerce", "tool", "experts"]
+Parsed must: ["ecommerce prior experience", "base.com tool implementation expertise"]
+Output: {
+  "issues": [],
+  "confident_rewrites": [
+    { "field": "keywords", "oldValue": ["base.com", "implementation", "ecommerce", "tool", "experts"], "newValue": ["Base.com implementation expert"], "reason": "These five keywords are fragments of one concept from your description ('implementation experts on Base.com tool'). Combining them sharpens the search." },
+    { "field": "must", "oldValue": ["ecommerce prior experience", "base.com tool implementation expertise"], "newValue": ["Base.com", "ecommerce"], "reason": "Must-have works best as crisp skill terms. We extracted Base.com and ecommerce from your description." }
+  ]
+}
+
+Raw: "5 Splunk Observability trainers India freelance"
+Parsed keywords: ["Splunk Observability Trainer", "Splunk Observability Consultant", "Splunk Observability SME", "Splunk Observability Expert", "Splunk Observability Architect", "Splunk Observability Solution Architect"]
+Parsed must: []
+Output: {
+  "issues": [
+    { "type": "missing_must", "severity": "block", "title": "Add a must-have skill", "message": "Without 'Splunk' as a must-have, candidates without genuine Splunk depth will pass the filter. Recommended: add 'Splunk' to must-have.", "field": "must" }
+  ],
+  "confident_rewrites": [
+    { "field": "keywords", "oldValue": ["Splunk Observability Trainer","Splunk Observability Consultant","Splunk Observability SME","Splunk Observability Expert","Splunk Observability Architect","Splunk Observability Solution Architect"], "newValue": ["Splunk Observability trainer"], "reason": "All six keywords target the same pool with different role suffixes. The ranking step already handles role variants — one sharp keyword does the job." }
+  ]
+}
+
+Raw: "woocomerce trainer with skils in in ecommerce pluggins experience"
+Parsed keywords: ["WooCommerce", "ecommerce", "plugins", "ecommerce plugins"]
+Parsed must: ["WooCommerce experience", "ecommerce plugins knowledge"]
+Output: {
+  "issues": [],
+  "confident_rewrites": [
+    { "field": "keywords", "oldValue": ["WooCommerce","ecommerce","plugins","ecommerce plugins"], "newValue": ["WooCommerce trainer"], "reason": "Your description was 'WooCommerce trainer with ecommerce plugins skill' — that's one coherent search target. The other three keywords overlap and add noise." },
+    { "field": "must", "oldValue": ["WooCommerce experience", "ecommerce plugins knowledge"], "newValue": ["WooCommerce"], "reason": "Must-have works best as a single crisp skill. WooCommerce is the core requirement; ecommerce plugins is a should-have." },
+    { "field": "should", "oldValue": [], "newValue": ["ecommerce plugins"], "reason": "Moved from must to should — it's a nice-to-have, not a hard filter." }
+  ]
+}
+
+Now review:`;
+
+app.post('/api/briefs/critique', auth.requireAuth, async (req, res) => {
+  const rawInput = String((req.body && req.body.rawInput) || '').slice(0, 3000).trim();
+  const parsed = (req.body && typeof req.body.parsed === 'object') ? req.body.parsed : {};
+  if (!rawInput && !parsed) return res.status(400).json({ error: 'rawInput or parsed required' });
+  const client = makeLlmClient();
+  if (!client) {
+    return res.status(503).json({ error: 'Critique service not configured. Continuing without critique.' });
+  }
+  try {
+    const userPrompt = `Raw input from operator:\n"""${rawInput}"""\n\nCurrent parsed fields:\n${JSON.stringify({
+      keywords: parsed.keywords || [],
+      must:     parsed.must     || [],
+      should:   parsed.should   || [],
+      mustNot:  parsed.mustNot  || [],
+      searchMode: parsed.searchMode || 'std',
+    }, null, 2)}\n\nReturn ONLY the JSON object with issues and confident_rewrites.`;
+    const resp = await client.messages.create({
+      model: process.env.CLAUDE_MODEL_FAST || 'claude-haiku-4-5-20251001',
+      max_tokens: 1200,
+      system: CRITIQUE_SYSTEM_PROMPT,
+      messages: [{ role: 'user', content: userPrompt }],
+    });
+    const out = (resp.content[0] && resp.content[0].text) || '';
+    let critique = { issues: [], confident_rewrites: [] };
+    try {
+      const m = out.match(/\{[\s\S]*\}/);
+      if (m) critique = JSON.parse(m[0]);
+    } catch (_) {}
+    if (!Array.isArray(critique.issues)) critique.issues = [];
+    if (!Array.isArray(critique.confident_rewrites)) critique.confident_rewrites = [];
+    res.json({ critique });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
