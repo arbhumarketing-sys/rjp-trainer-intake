@@ -2590,6 +2590,37 @@ function renderDetail(m) {
     : (b.createdAt ? Math.round((Date.now() - new Date(b.createdAt).getTime()) / 1000) : 0);
   const isComplete = status === 'complete' || status === 'preview_ready';
   const isOver = !isComplete && tatElapsed > tatTarget;
+
+  // v3.37.0 — ETA / progress %. Computes median totalElapsed across recent
+  // non-test completed briefs of the same mode, derives a moving progress
+  // bar. Caps at 95% to avoid claiming "done" before the engine actually
+  // finishes. Falls back to tatTarget when there's not enough history yet.
+  const isRunning = !isComplete && status !== 'failed';
+  let etaHTML = '';
+  if (isRunning) {
+    const peers = (state.briefs || []).filter(x => x.status === 'complete' && !x.isTest && x.mode === b.mode && x.totalElapsed && parseFloat(x.totalElapsed) > 30);
+    let estimatedTotal = tatTarget;
+    if (peers.length >= 3) {
+      const sorted = peers.map(x => parseFloat(x.totalElapsed)).sort((a, b) => a - b);
+      estimatedTotal = sorted[Math.floor(sorted.length / 2)];  // median
+    }
+    const pct = Math.min(95, Math.max(2, Math.round((tatElapsed / estimatedTotal) * 100)));
+    const remaining = Math.max(0, Math.round(estimatedTotal - tatElapsed));
+    const remainingLabel = remaining > 60 ? `~${Math.round(remaining / 60)} min remaining` : (remaining > 0 ? `~${remaining}s remaining` : 'finishing up');
+    const sourceLabel = peers.length >= 3 ? `based on ${peers.length} similar past run${peers.length > 1 ? 's' : ''}` : 'using mode default (not enough history)';
+    etaHTML = `
+      <div style="margin:8px 0 12px 0;padding:10px 14px;background:#F8FAFC;border:1px solid #E2E8F0;border-radius:6px;">
+        <div style="display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--ink-2);margin-bottom:6px;">
+          <span style="font-weight:600;color:var(--ink-1);">${esc(remainingLabel)}</span>
+          <span style="color:var(--ink-3);">· estimated total ${formatDuration(estimatedTotal)} ${esc(sourceLabel)}</span>
+          <span style="margin-left:auto;font-family:monospace;color:var(--ink-3);">${pct}%</span>
+        </div>
+        <div style="width:100%;height:6px;background:#E2E8F0;border-radius:3px;overflow:hidden;">
+          <div style="height:100%;width:${pct}%;background:linear-gradient(90deg, #3B82F6, #1E40AF);transition:width 0.5s ease;"></div>
+        </div>
+      </div>`;
+  }
+
   const tatHTML = `
     <div class="tat-bar ${isComplete ? 'done' : (isOver ? 'over' : '')}">
       <span class="tat-dot"></span>
@@ -2602,6 +2633,7 @@ function renderDetail(m) {
         return esc(label) + ' ' + esc(t.elapsed) + 's';
       }).join(' · ') + '</span>' : ''}
     </div>
+    ${etaHTML}
   `;
 
   const downloadHTML = (status === 'complete')
