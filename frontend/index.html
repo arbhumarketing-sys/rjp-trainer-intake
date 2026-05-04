@@ -228,6 +228,14 @@
   }
   .empty-side a { color: #1e40af; text-decoration: underline; }
 
+  /* v3.27.0 — nested source toggles */
+  .src-group { margin: 8px 0; padding: 8px 10px; background: #fff; border: 1px solid var(--line); border-radius: 5px; }
+  .src-parent { font-weight: 600; padding: 4px 0 6px !important; }
+  .src-grp-count { font-size: 11px; color: var(--ink-3); font-weight: 400; margin-left: 4px; }
+  .src-children { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; padding-left: 22px; margin-top: 4px; padding-top: 6px; border-top: 1px dashed var(--line); }
+  .src-child { padding: 3px 4px !important; }
+  .src-child .src-name { font-size: 12px; font-weight: 500; }
+  .src-child .src-sub  { font-size: 10.5px; color: var(--ink-3); margin-top: 0; font-family: ui-monospace, Menlo, monospace; }
   /* v3.26.0 — source toggles in chat Step 2 */
   .src-panel {
     border: 1px solid var(--line); border-radius: 6px;
@@ -245,7 +253,6 @@
   .src-summary-label { font-size: 13px; font-weight: 600; color: var(--ink); flex: 1; }
   .src-summary-count { font-size: 11.5px; color: var(--ink-3); font-weight: 400; }
   .src-list {
-    display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px;
     margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line);
   }
   .src-row {
@@ -842,28 +849,67 @@ const DOMAIN_OPTIONS = [
 // v3.24.0 — LOCATIONS + OUTPUT_OPTIONS removed (wizard-only constants;
 // chat flow asks location as a clarifying question and only ever builds .xlsx)
 
-// v3.26.0 — search source toggles. Each entry is an Apify Google query family
-// the pipeline runs in Phase 2. Operator can disable individual sources from
-// chat Step 2 if they're known-noisy for a domain. Perplexity is shown but
-// disabled until PERPLEXITY_API_KEY lands on Render.
+// v3.27.0 — search source toggles, now nested. Grouped sources expose each
+// child site as its own checkbox; parent acts as select-all. Backend builds
+// the OR-query string dynamically from active children (skips entire query
+// family if 0 children active). Perplexity remains disabled until
+// PERPLEXITY_API_KEY lands on Render.
 const SOURCE_OPTIONS = [
-  { key: 'linkedin',             label: 'LinkedIn profiles',   sub: 'site:linkedin.com/in', defaultOn: true,  needsKey: false },
-  { key: 'urbanpro',             label: 'UrbanPro / Sulekha',  sub: 'Indian trainer marketplaces', defaultOn: true, needsKey: false },
-  { key: 'youtube',              label: 'YouTube tutorials',   sub: 'site:youtube.com', defaultOn: true,  needsKey: false },
-  { key: 'udemy',                label: 'Udemy courses',       sub: 'site:udemy.com',   defaultOn: true,  needsKey: false },
-  { key: 'blogs',                label: 'Tech blogs',          sub: 'Medium, dev.to, Hashnode, Substack', defaultOn: true, needsKey: false },
-  { key: 'indianPlatforms',      label: 'Indian platforms',    sub: 'Edureka, Simplilearn, GreatLearning, UpGrad, AnalyticsVidhya, Whizlabs, KodeKloud', defaultOn: true, needsKey: false },
-  { key: 'authorityDirectories', label: 'Authority directories', sub: 'MS MVP, Google GDE, AWS Hero, Salesforce Trailblazer, CNCF', defaultOn: true, needsKey: false },
-  { key: 'coursePlatforms',      label: 'Course platforms',    sub: "Coursera, Pluralsight, LinkedIn Learning, O'Reilly", defaultOn: true, needsKey: false },
-  { key: 'meetup',               label: 'Meetup organizers',   sub: 'site:meetup.com',     defaultOn: true, needsKey: false },
-  { key: 'eventbrite',           label: 'Eventbrite hosts',    sub: 'site:eventbrite.com', defaultOn: true, needsKey: false },
-  { key: 'github',               label: 'GitHub edu repos',    sub: 'site:github.com',     defaultOn: true, needsKey: false },
-  { key: 'perplexity',           label: 'Perplexity (Sonar Pro)', sub: 'Live-web named-trainer probe (Phase 1.2)', defaultOn: true, needsKey: true },
+  { key: 'linkedin', label: 'LinkedIn profiles', sub: 'site:linkedin.com/in' },
+  { key: 'marketplace', label: 'Trainer marketplaces', children: [
+    { key: 'urbanpro', label: 'UrbanPro', sub: 'urbanpro.com' },
+    { key: 'sulekha',  label: 'Sulekha',  sub: 'sulekha.com' },
+  ]},
+  { key: 'youtube', label: 'YouTube tutorials', sub: 'site:youtube.com' },
+  { key: 'udemy',   label: 'Udemy courses',     sub: 'site:udemy.com' },
+  { key: 'blogs', label: 'Tech blogs', children: [
+    { key: 'medium',   label: 'Medium',   sub: 'medium.com' },
+    { key: 'devto',    label: 'dev.to',   sub: 'dev.to' },
+    { key: 'hashnode', label: 'Hashnode', sub: 'hashnode.com (Indian-founded, dev-heavy)' },
+    { key: 'substack', label: 'Substack', sub: 'substack.com (paid newsletters / cohorts)' },
+  ]},
+  { key: 'indianPlatforms', label: 'Indian training platforms', children: [
+    { key: 'edureka',         label: 'Edureka',          sub: 'edureka.co' },
+    { key: 'simplilearn',     label: 'Simplilearn',      sub: 'simplilearn.com' },
+    { key: 'greatlearning',   label: 'Great Learning',   sub: 'greatlearning.com' },
+    { key: 'upgrad',          label: 'UpGrad',           sub: 'upgrad.com' },
+    { key: 'analyticsvidhya', label: 'Analytics Vidhya', sub: 'analyticsvidhya.com' },
+    { key: 'whizlabs',        label: 'Whizlabs',         sub: 'whizlabs.com' },
+    { key: 'kodekloud',       label: 'KodeKloud',        sub: 'kodekloud.com' },
+  ]},
+  { key: 'authorityDirectories', label: 'Authority directories', children: [
+    { key: 'msmvp',         label: 'Microsoft MVP',          sub: 'mvp.microsoft.com' },
+    { key: 'googlegde',     label: 'Google GDE',             sub: 'developers.google.com/community' },
+    { key: 'awshero',       label: 'AWS Hero',               sub: 'aws.amazon.com/heroes' },
+    { key: 'sftrailblazer', label: 'Salesforce Trailblazer', sub: 'trailblazer.me' },
+    { key: 'cncf',          label: 'CNCF',                   sub: 'cncf.io/people' },
+  ]},
+  { key: 'coursePlatforms', label: 'Course platforms', children: [
+    { key: 'coursera',         label: 'Coursera',          sub: 'coursera.org' },
+    { key: 'pluralsight',      label: 'Pluralsight',       sub: 'pluralsight.com' },
+    { key: 'linkedinlearning', label: 'LinkedIn Learning', sub: 'linkedin.com/learning' },
+    { key: 'oreilly',          label: "O'Reilly",          sub: 'oreilly.com' },
+  ]},
+  { key: 'meetup',     label: 'Meetup organizers', sub: 'site:meetup.com' },
+  { key: 'eventbrite', label: 'Eventbrite hosts',  sub: 'site:eventbrite.com' },
+  { key: 'github',     label: 'GitHub edu repos',  sub: 'site:github.com' },
+  { key: 'perplexity', label: 'Perplexity (Sonar Pro)', sub: 'Live-web named-trainer probe (Phase 1.2)', needsKey: true },
 ];
+// All leaf source keys, all defaulting to ON. Grouped sources flatten to
+// `${parentKey}_${childKey}` (e.g. indianPlatforms_edureka).
 function defaultSourceMap() {
   const out = {};
-  for (const s of SOURCE_OPTIONS) out[s.key] = s.defaultOn;
+  for (const s of SOURCE_OPTIONS) {
+    if (s.children) {
+      for (const c of s.children) out[`${s.key}_${c.key}`] = true;
+    } else {
+      out[s.key] = true;
+    }
+  }
   return out;
+}
+function sourceLeafKeys(opt) {
+  return opt.children ? opt.children.map(c => `${opt.key}_${c.key}`) : [opt.key];
 }
 
 /* ============================================================ */
@@ -1764,24 +1810,61 @@ function renderChatStep2() {
   const p = state.chatParsed || {};
   // Suggest a domain if missing — derive from first keyword
   const suggestedDomain = p.domain || (Array.isArray(p.keywords) && p.keywords[0]) || '';
-  // v3.26.0 — source toggles UI
+  // v3.27.0 — nested source toggles. Grouped sources expose each child site
+  // as its own checkbox; parent shows tri-state (all/some/none active).
   const sources = p.sources || defaultSourceMap();
-  const activeSources = SOURCE_OPTIONS.filter(s => sources[s.key] && (!s.needsKey || state.perplexityConfigured));
-  const sourcesSummary = `${activeSources.length} of ${SOURCE_OPTIONS.length} sources enabled${state.perplexityConfigured ? '' : ' (Perplexity awaiting API key)'}`;
-  const sourceCheckboxes = SOURCE_OPTIONS.map(s => {
-    const isOn = !!sources[s.key];
+  // Count active LEAVES (perplexity counts only when key is configured)
+  const allLeafKeys = SOURCE_OPTIONS.flatMap(sourceLeafKeys);
+  const activeLeafCount = allLeafKeys.filter(k => {
+    if (k === 'perplexity' && !state.perplexityConfigured) return false;
+    return !!sources[k];
+  }).length;
+  const totalLeafCount = allLeafKeys.length;
+  const sourcesSummary = `${activeLeafCount} of ${totalLeafCount} sources enabled${state.perplexityConfigured ? '' : ' (Perplexity awaiting API key)'}`;
+
+  const renderRow = (s) => {
     const disabled = s.needsKey && !state.perplexityConfigured;
+    const isOn = !!sources[s.key];
     return `
-      <label class="src-row ${disabled ? 'disabled' : ''}" title="${esc(s.sub)}">
+      <label class="src-row ${disabled ? 'disabled' : ''}" title="${esc(s.sub || '')}">
         <input type="checkbox" data-src="${esc(s.key)}" ${isOn && !disabled ? 'checked' : ''} ${disabled ? 'disabled' : ''} />
         <span class="src-label">
           <span class="src-name">${esc(s.label)}</span>
-          <span class="src-sub">${esc(s.sub)}</span>
+          ${s.sub ? `<span class="src-sub">${esc(s.sub)}</span>` : ''}
         </span>
         ${s.needsKey ? `<span class="src-status ${state.perplexityConfigured ? 'ok' : 'pending'}">${state.perplexityConfigured ? '✓ Active' : '🔒 Awaiting API key'}</span>` : ''}
       </label>
     `;
-  }).join('');
+  };
+  const renderGroup = (g) => {
+    const childKeys = g.children.map(c => `${g.key}_${c.key}`);
+    const onCount = childKeys.filter(k => sources[k]).length;
+    const allOn = onCount === childKeys.length;
+    const someOn = onCount > 0 && !allOn;
+    const summary = allOn ? 'all' : (onCount === 0 ? 'none' : `${onCount} of ${childKeys.length}`);
+    return `
+      <div class="src-group">
+        <label class="src-row src-parent">
+          <input type="checkbox" data-grp="${esc(g.key)}" ${allOn ? 'checked' : ''} ${someOn ? 'data-indeterminate="1"' : ''} />
+          <span class="src-label">
+            <span class="src-name">${esc(g.label)} <span class="src-grp-count">(${summary})</span></span>
+          </span>
+        </label>
+        <div class="src-children">
+          ${g.children.map(c => `
+            <label class="src-row src-child" title="${esc(c.sub)}">
+              <input type="checkbox" data-src="${esc(g.key + '_' + c.key)}" data-grpparent="${esc(g.key)}" ${sources[`${g.key}_${c.key}`] ? 'checked' : ''} />
+              <span class="src-label">
+                <span class="src-name">${esc(c.label)}</span>
+                <span class="src-sub">${esc(c.sub)}</span>
+              </span>
+            </label>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  };
+  const sourceCheckboxes = SOURCE_OPTIONS.map(s => s.children ? renderGroup(s) : renderRow(s)).join('');
 
   document.getElementById('chat-body').innerHTML = `
     <div class="panel">
@@ -1818,15 +1901,73 @@ function renderChatStep2() {
       ${state.chatLoading ? renderLoadingMeter('Generating clarifying questions…', 10) : ''}
     </div>
   `;
-  // v3.26.0 — wire source-toggle checkboxes
-  document.querySelectorAll('.src-row input[type="checkbox"]').forEach(cb => {
+  // v3.27.0 — source-toggle checkboxes. Three handlers: leaf, child, parent.
+  // Parent click -> set all children to match new state.
+  // Child click  -> just update child; parent's checked + indeterminate visual updates.
+  // Set indeterminate property on render (HTML attr can't carry tri-state).
+  document.querySelectorAll('.src-row input[data-indeterminate="1"]').forEach(cb => { cb.indeterminate = true; });
+
+  function recomputeSummary() {
+    const sources = state.chatParsed.sources;
+    const activeLeaves = SOURCE_OPTIONS.flatMap(sourceLeafKeys).filter(k => {
+      if (k === 'perplexity' && !state.perplexityConfigured) return false;
+      return !!sources[k];
+    }).length;
+    const total = SOURCE_OPTIONS.flatMap(sourceLeafKeys).length;
+    const lbl = document.querySelector('.src-summary-count');
+    if (lbl) lbl.textContent = `${activeLeaves} of ${total} sources enabled${state.perplexityConfigured ? '' : ' (Perplexity awaiting API key)'}`;
+  }
+
+  function refreshGroupParent(grpKey) {
+    const grp = SOURCE_OPTIONS.find(o => o.key === grpKey);
+    if (!grp || !grp.children) return;
+    const childKeys = grp.children.map(c => `${grp.key}_${c.key}`);
+    const onCount = childKeys.filter(k => state.chatParsed.sources[k]).length;
+    const allOn = onCount === childKeys.length;
+    const someOn = onCount > 0 && !allOn;
+    const parentCb = document.querySelector(`input[data-grp="${grpKey}"]`);
+    if (parentCb) { parentCb.checked = allOn; parentCb.indeterminate = someOn; }
+    const cnt = parentCb && parentCb.closest('.src-group').querySelector('.src-grp-count');
+    if (cnt) cnt.textContent = `(${allOn ? 'all' : onCount === 0 ? 'none' : `${onCount} of ${childKeys.length}`})`;
+  }
+
+  // Leaf checkboxes (top-level non-grouped, like LinkedIn / YouTube / etc.)
+  document.querySelectorAll('.src-row input[data-src]:not([data-grpparent])').forEach(cb => {
     cb.addEventListener('change', () => {
       state.chatParsed.sources = state.chatParsed.sources || defaultSourceMap();
       state.chatParsed.sources[cb.dataset.src] = cb.checked;
-      // Update the summary count label inline without full re-render
-      const newActive = SOURCE_OPTIONS.filter(s => state.chatParsed.sources[s.key] && (!s.needsKey || state.perplexityConfigured)).length;
-      const lbl = document.querySelector('.src-summary-count');
-      if (lbl) lbl.textContent = `${newActive} of ${SOURCE_OPTIONS.length} sources enabled${state.perplexityConfigured ? '' : ' (Perplexity awaiting API key)'}`;
+      recomputeSummary();
+      saveChatDraft();
+    });
+  });
+
+  // Child checkboxes (under a group)
+  document.querySelectorAll('.src-row input[data-src][data-grpparent]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      state.chatParsed.sources = state.chatParsed.sources || defaultSourceMap();
+      state.chatParsed.sources[cb.dataset.src] = cb.checked;
+      refreshGroupParent(cb.dataset.grpparent);
+      recomputeSummary();
+      saveChatDraft();
+    });
+  });
+
+  // Parent checkboxes (group select-all)
+  document.querySelectorAll('.src-row input[data-grp]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      state.chatParsed.sources = state.chatParsed.sources || defaultSourceMap();
+      const grp = SOURCE_OPTIONS.find(o => o.key === cb.dataset.grp);
+      if (!grp || !grp.children) return;
+      grp.children.forEach(c => {
+        const flatKey = `${grp.key}_${c.key}`;
+        state.chatParsed.sources[flatKey] = cb.checked;
+        const childCb = document.querySelector(`input[data-src="${flatKey}"]`);
+        if (childCb) childCb.checked = cb.checked;
+      });
+      cb.indeterminate = false;
+      const cnt = cb.closest('.src-group').querySelector('.src-grp-count');
+      if (cnt) cnt.textContent = `(${cb.checked ? 'all' : 'none'})`;
+      recomputeSummary();
       saveChatDraft();
     });
   });

@@ -350,19 +350,46 @@ function normalizeBrief(brief) {
   // existing briefs (created before the new keys existed) automatically benefit
   // from broader pool coverage. Operators can disable individual sources
   // per-brief via the Step 3 source-toggles UI.
+  // v3.27.0 — nested source schema. Each grouped source (marketplace / blogs /
+  // indianPlatforms / authorityDirectories / coursePlatforms) expands into
+  // per-site flat keys so the operator can disable individual sites. All
+  // children default ON. The pipeline's buildGoogleQueries dynamically
+  // builds the OR-string from active children, skipping the query family
+  // entirely if 0 children are active.
   const DEFAULT_SOURCES = {
     linkedin: true,
-    urbanpro: true,
-    youtube: true,
-    udemy: true,
-    blogs: true,
-    // v3.3 additions
-    indianPlatforms: true,        // Edureka, Simplilearn, GreatLearning, UpGrad, AnalyticsVidhya, Whizlabs, KodeKloud
-    authorityDirectories: true,   // Microsoft MVP, Google GDE, AWS Hero, Salesforce Trailblazer, CNCF Ambassador
-    coursePlatforms: true,        // Coursera, Pluralsight, LinkedIn Learning, O'Reilly
-    meetup: true,                 // meetup.com — community organizers (high training-delivery signal)
-    eventbrite: true,             // workshop hosts in India
-    github: true,                 // educational repo authors (best for dev/tech roles)
+    youtube:  true,
+    udemy:    true,
+    meetup:   true,
+    eventbrite: true,
+    github:   true,
+    // marketplace
+    marketplace_urbanpro: true,
+    marketplace_sulekha:  true,
+    // blogs
+    blogs_medium:    true,
+    blogs_devto:     true,
+    blogs_hashnode:  true,
+    blogs_substack:  true,
+    // indian platforms
+    indianPlatforms_edureka:         true,
+    indianPlatforms_simplilearn:     true,
+    indianPlatforms_greatlearning:   true,
+    indianPlatforms_upgrad:          true,
+    indianPlatforms_analyticsvidhya: true,
+    indianPlatforms_whizlabs:        true,
+    indianPlatforms_kodekloud:       true,
+    // authority directories
+    authorityDirectories_msmvp:         true,
+    authorityDirectories_googlegde:     true,
+    authorityDirectories_awshero:       true,
+    authorityDirectories_sftrailblazer: true,
+    authorityDirectories_cncf:          true,
+    // course platforms
+    coursePlatforms_coursera:         true,
+    coursePlatforms_pluralsight:      true,
+    coursePlatforms_linkedinlearning: true,
+    coursePlatforms_oreilly:          true,
   };
   const advanced = Object.assign({
     queryDepth: searchMode === 'niche' ? MAX_QUERIES_NICHE : MAX_QUERIES_STD,
@@ -559,6 +586,52 @@ function dedupeLower(arr) {
 // LinkedIn alone, and YouTube/Udemy/marketplace/blog queries (especially the
 // new L4 tier) would never fire. Interleaved order ensures every source
 // gets at least one shot per keyword before LinkedIn fills the slack.
+// v3.27.0 — group definitions for nested source toggles. Each child key is
+// `${groupKey}_${childKey}` in `sites` (e.g. indianPlatforms_edureka). Pipeline
+// builds the OR-string dynamically from active children; if 0 children active
+// for a group, the entire query family is skipped that pass.
+const SOURCE_GROUP_SITES = {
+  marketplace: {
+    urbanpro: 'urbanpro.com',
+    sulekha:  'sulekha.com',
+  },
+  blogs: {
+    medium:   'medium.com',
+    devto:    'dev.to',
+    hashnode: 'hashnode.com',
+    substack: 'substack.com',
+  },
+  indianPlatforms: {
+    edureka:         'edureka.co',
+    simplilearn:     'simplilearn.com',
+    greatlearning:   'greatlearning.com',
+    upgrad:          'upgrad.com',
+    analyticsvidhya: 'analyticsvidhya.com',
+    whizlabs:        'whizlabs.com',
+    kodekloud:       'kodekloud.com',
+  },
+  authorityDirectories: {
+    msmvp:         'mvp.microsoft.com',
+    googlegde:     'developers.google.com/community',
+    awshero:       'aws.amazon.com/heroes',
+    sftrailblazer: 'trailblazer.me',
+    cncf:          'cncf.io/people',
+  },
+  coursePlatforms: {
+    coursera:         'coursera.org',
+    pluralsight:      'pluralsight.com',
+    linkedinlearning: 'linkedin.com/learning',
+    oreilly:          'oreilly.com',
+  },
+};
+function activeGroupSites(sites, group) {
+  const children = SOURCE_GROUP_SITES[group] || {};
+  return Object.keys(children)
+    .filter(c => sites[`${group}_${c}`])
+    .map(c => `site:${children[c]}`)
+    .join(' OR ');
+}
+
 function buildGoogleQueries(brief, bp) {
   const sites = bp.advanced.sources;
   const trainerVariants = ['independent instructor', 'freelance trainer', 'corporate trainer', 'instructor', 'trainer'];
@@ -582,19 +655,19 @@ function buildGoogleQueries(brief, bp) {
         keyword: kw, variant: trainerVariants[0], source: 'linkedin', tier: 'L1.3',
       });
     }
-    if (sites.urbanpro) {
+    // v3.27.0 — marketplace OR-string built from active urbanpro/sulekha children
+    const marketplaceSites = activeGroupSites(sites, 'marketplace');
+    if (marketplaceSites) {
       perKw.push({
-        query: `${kwClean} trainer India site:urbanpro.com OR site:sulekha.com`,
+        query: `${kwClean} trainer India ${marketplaceSites}`,
         keyword: kw, variant: 'marketplace', source: 'urbanpro', tier: 'L1.3',
       });
     }
-    if (sites.blogs) {
-      // v3.3: refined to target specific high-signal blogging platforms
-      // instead of generic "anything not LinkedIn". Hashnode is Indian-founded
-      // and dev-heavy; Dev.to and Medium have strong Indian tech-writer pools;
-      // Substack catches paid-newsletter authors who often run cohorts.
+    // v3.27.0 — blogs OR-string from active medium/devto/hashnode/substack children
+    const blogSites = activeGroupSites(sites, 'blogs');
+    if (blogSites) {
       perKw.push({
-        query: `${kwClean} trainer India site:hashnode.com OR site:dev.to OR site:medium.com OR site:substack.com`,
+        query: `${kwClean} trainer India ${blogSites}`,
         keyword: kw, variant: 'blog', source: 'blogs', tier: 'L1.3',
       });
     }
@@ -612,30 +685,27 @@ function buildGoogleQueries(brief, bp) {
         keyword: kw, variant: 'udemy-instructor', source: 'udemy', tier: 'L4',
       });
     }
-    // v3.3 — Indian training platforms. These ARE corporate trainers (it's
-    // their literal job). Combined into one OR-query so we don't burn 7
-    // separate queries per keyword when the cap is 12.
-    if (sites.indianPlatforms) {
+    // v3.27.0 — Indian training platforms OR-string from active children
+    const indianSites = activeGroupSites(sites, 'indianPlatforms');
+    if (indianSites) {
       perKw.push({
-        query: `${kwClean} instructor India site:edureka.co OR site:simplilearn.com OR site:greatlearning.com OR site:upgrad.com OR site:analyticsvidhya.com OR site:whizlabs.com OR site:kodekloud.com`,
+        query: `${kwClean} instructor India ${indianSites}`,
         keyword: kw, variant: 'indian-platform', source: 'indian-platforms', tier: 'L1.3',
       });
     }
-    // v3.3 — Authority directories. Vendor-curated MVP / GDE / Hero lists.
-    // Highest signal-to-noise of any source — these people have been
-    // explicitly vetted by Microsoft / Google / AWS / Salesforce / CNCF.
-    if (sites.authorityDirectories) {
+    // v3.27.0 — Authority directories OR-string from active children
+    const authoritySites = activeGroupSites(sites, 'authorityDirectories');
+    if (authoritySites) {
       perKw.push({
-        query: `${kwClean} India site:mvp.microsoft.com OR site:developers.google.com/community OR site:aws.amazon.com/heroes OR site:trailblazer.me OR site:cncf.io/people`,
+        query: `${kwClean} India ${authoritySites}`,
         keyword: kw, variant: 'authority', source: 'authority-directory', tier: 'L1.3',
       });
     }
-    // v3.3 — Course platforms (instructor pages on Coursera, Pluralsight,
-    // LinkedIn Learning, O'Reilly). Good for vetted senior-level trainers,
-    // strong India representation on Pluralsight especially.
-    if (sites.coursePlatforms) {
+    // v3.27.0 — Course platforms OR-string from active children
+    const courseSites = activeGroupSites(sites, 'coursePlatforms');
+    if (courseSites) {
       perKw.push({
-        query: `${kwClean} instructor India site:coursera.org OR site:pluralsight.com OR site:linkedin.com/learning OR site:oreilly.com`,
+        query: `${kwClean} instructor India ${courseSites}`,
         keyword: kw, variant: 'course-platform', source: 'course-platform', tier: 'L1.3',
       });
     }
