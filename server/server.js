@@ -72,7 +72,7 @@ app.get('/healthz', (req, res) => {
   res.json({
     ok: true,
     ts: new Date().toISOString(),
-    version: '3.31.0',
+    version: '3.31.1',
     uptimeSec: Math.round((Date.now() - _bootedAt) / 1000),
     storage: process.env.DATABASE_URL ? 'postgres' : 'filesystem',
     dirty,

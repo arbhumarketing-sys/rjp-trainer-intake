@@ -79,7 +79,7 @@ async function perplexityChat({ system, user, maxTokens, model, timeoutMs } = {}
     return { text, citations, usage: (data && data.usage) || null, model: (data && data.model) || PERPLEXITY_MODEL };
   } catch (e) {
     if (e.name === 'AbortError') {
-      const err = new Error(`Perplexity timed out after ${timeoutMs || PERPLEXITY_TIMEOUT_MS}ms`);
+      const err = new Error(`Live web probe timed out after ${timeoutMs || PERPLEXITY_TIMEOUT_MS}ms`);
       err.status = 504;
       throw err;
     }

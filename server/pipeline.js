@@ -2632,7 +2632,7 @@ async function runPipeline(briefId, opts = {}) {
       }
       stop();
     } else if (!previewMode) {
-      logAndSave(briefId, `Phase 1 skipped — no LLM client (set ANTHROPIC_VIA_CLAUDE_CLI=true or ANTHROPIC_API_KEY). Falling back to Google-only.`, 'warn');
+      logAndSave(briefId, `Phase 1 skipped — knowledge-base client not configured. Falling back to web-search-only.`, 'warn');
     }
 
     // ---- PHASE 1.2: live-web named-trainer probe (Perplexity Sonar Pro) — v3.11.0 ----
