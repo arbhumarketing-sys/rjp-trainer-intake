@@ -943,6 +943,11 @@ let state = {
   candidateOutreach: {},
   outreachLoadedFor: null,
   scoresLoadedFor: null,     // briefId for which scores were last fetched (avoid re-fetching during polls)
+  // v3.38.0 — quality reports cache, keyed by briefId. Fetched lazily when a
+  // completed brief's detail page is opened. Avoids refetching on every poll.
+  qualityReports: {},
+  qualityReportLoading: {},
+
   // v3.10.0 — chat-style input flow (replaces wizard as default for "+ New brief")
   chatStep: 1,               // 1=describe, 2=review parse, 3=clarifying questions, 4=submit
   chatInput: '',
@@ -2552,6 +2557,85 @@ function renderHome(m) {
 
 
 /* ============================================================ */
+// v3.38.0 — Lazy-fetch the quality report for completed briefs. Cached per
+// briefId; second open shows cached data instantly. LLM-driven so failures
+// degrade gracefully (panel still renders with rule-based facts).
+async function fetchQualityReport(briefId) {
+  if (!briefId) return;
+  if (state.qualityReports[briefId]) return;       // already cached
+  if (state.qualityReportLoading[briefId]) return; // already in flight
+  state.qualityReportLoading[briefId] = true;
+  try {
+    const r = await api('POST', '/api/briefs/' + encodeURIComponent(briefId) + '/quality-report', {});
+    state.qualityReports[briefId] = r;
+    if (state.activeBriefId === briefId && state.view === 'detail') renderMain();
+  } catch (e) {
+    console.warn('[quality-report] fetch failed:', e.message);
+    // Stash an empty report so we don't keep retrying
+    state.qualityReports[briefId] = { facts: null, summary: '', recommendations: [], _failed: true };
+  } finally {
+    state.qualityReportLoading[briefId] = false;
+  }
+}
+
+function renderQualityReportPanel(b) {
+  const status = b.status || 'queued';
+  if (status !== 'complete' && status !== 'failed') return '';
+  const rep = state.qualityReports[b.id];
+  if (state.qualityReportLoading[b.id]) {
+    return `<div class="panel" style="margin-top:14px;">
+      <h3>Run quality assessment</h3>
+      <div class="panel-sub">Analysing this run against past briefs… ~3s</div>
+    </div>`;
+  }
+  if (!rep) return '';  // not yet fetched; the trigger fires after render
+  if (rep._failed) {
+    return `<div class="panel" style="margin-top:14px;">
+      <h3>Run quality assessment</h3>
+      <div class="panel-sub" style="color:var(--ink-3);">Could not generate report (LLM unavailable). Refresh to retry.</div>
+    </div>`;
+  }
+  const f = rep.facts || {};
+  const inp = f.inputs || {};
+  const out = f.outcome || {};
+  const peer = f.peerComparison || {};
+  const summary = rep.summary || '';
+  const recs = rep.recommendations || [];
+
+  // Open by default if lowYield or below-peer; collapsed otherwise
+  const openByDefault = !!out.lowYield || !!peer.worseThanPeers;
+  const headlineColor = out.lowYield || peer.worseThanPeers ? '#92400E' : (peer.betterThanPeers ? '#15803D' : 'var(--ink-1)');
+  const headlineIcon = out.lowYield ? '⚠' : (peer.betterThanPeers ? '✓' : 'ℹ');
+
+  const factsList = [];
+  if (inp.keywordCount) factsList.push(`${inp.keywordCount} keyword${inp.keywordCount === 1 ? '' : 's'} submitted${inp.genericKeywords && inp.genericKeywords.length ? ` — ${inp.genericKeywords.length} flagged as generic (${inp.genericKeywords.join(', ')})` : ''}`);
+  if (inp.hasNoMustHave) factsList.push(`No must-have skill set — every accepted candidate passed without a hard filter`);
+  if (inp.proseMust && inp.proseMust.length) factsList.push(`${inp.proseMust.length} must-have entr${inp.proseMust.length === 1 ? 'y is' : 'ies are'} prose-shaped (e.g., "${inp.proseMust[0]}")`);
+  if (out.discovered) factsList.push(`Discovered <strong>${out.discovered}</strong>, accepted <strong>${out.accepted}</strong> (${out.acceptRate}% accept rate)${peer.peerMedianAcceptRate != null ? ` — peer median is ${peer.peerMedianAcceptRate}%` : ''}`);
+  if (out.preflight) factsList.push(`Pre-flight defensibility: <strong>${out.preflight.yesCount}/${out.preflight.sampled}</strong> sampled candidates passed the "would you send to client" gate`);
+  if (f.feedbackIterations > 0) factsList.push(`Operator re-ran with feedback ${f.feedbackIterations} time${f.feedbackIterations === 1 ? '' : 's'}`);
+
+  return `<details class="panel" style="margin-top:14px;" ${openByDefault ? 'open' : ''}>
+    <summary style="cursor:pointer;list-style:none;display:flex;align-items:baseline;gap:8px;">
+      <h3 style="display:inline-block;margin:0;color:${headlineColor};">${headlineIcon} Run quality assessment</h3>
+      <span class="panel-sub">${out.lowYield ? 'low-yield' : (peer.betterThanPeers ? 'above peer median' : peer.worseThanPeers ? 'below peer median' : 'completed')} · click to ${openByDefault ? 'collapse' : 'expand'}</span>
+    </summary>
+    ${summary ? `<div style="margin-top:12px;padding:12px 14px;background:#F8FAFC;border:1px solid #E2E8F0;border-radius:6px;font-size:13.5px;color:var(--ink-1);line-height:1.6;">${esc(summary)}</div>` : ''}
+    ${factsList.length ? `<div style="margin-top:10px;">
+      <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--ink-3);margin-bottom:6px;">Facts</div>
+      <ul style="margin:0;padding-left:18px;font-size:13px;color:var(--ink-2);line-height:1.7;">
+        ${factsList.map(t => `<li>${t}</li>`).join('')}
+      </ul>
+    </div>` : ''}
+    ${recs.length ? `<div style="margin-top:14px;">
+      <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#1E40AF;margin-bottom:6px;">For your next brief</div>
+      <ol style="margin:0;padding-left:20px;font-size:13.5px;color:var(--ink-1);line-height:1.6;">
+        ${recs.map(r => `<li style="margin-bottom:5px;">${esc(r)}</li>`).join('')}
+      </ol>
+    </div>` : ''}
+  </details>`;
+}
+
 /* DETAIL                                                       */
 /* ============================================================ */
 function renderDetail(m) {
@@ -2754,6 +2838,8 @@ function renderDetail(m) {
         </div>` : ''}
       </div>
 
+      ${renderQualityReportPanel(b)}
+
       <details class="panel" style="margin-top:14px;" open>
         <summary style="cursor:pointer;list-style:none;display:flex;align-items:baseline;gap:8px;">
           <h3 style="display:inline-block;margin:0;">Brief inputs</h3>
@@ -2886,6 +2972,12 @@ function renderDetail(m) {
   // wiring
   const logBox = m.querySelector('.log');
   if (logBox) logBox.scrollTop = logBox.scrollHeight;
+
+  // v3.38.0 — Lazy-fetch quality report on first detail render of a completed
+  // brief. fetchQualityReport is idempotent (cached + in-flight gates).
+  if (b && (b.status === 'complete' || b.status === 'failed')) {
+    fetchQualityReport(b.id);
+  }
 
   // v3.9.0 — kick off scores fetch (idempotent — only fires when active brief
   // changes, not on every poll). Triggers a re-render once scores are in.

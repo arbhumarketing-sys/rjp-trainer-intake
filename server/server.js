@@ -72,7 +72,7 @@ app.get('/healthz', (req, res) => {
   res.json({
     ok: true,
     ts: new Date().toISOString(),
-    version: '3.37.0',
+    version: '3.38.0',
     uptimeSec: Math.round((Date.now() - _bootedAt) / 1000),
     storage: process.env.DATABASE_URL ? 'postgres' : 'filesystem',
     dirty,
@@ -564,6 +564,123 @@ app.get('/api/briefs/:id/output', auth.requireAuth, async (req, res) => {
    candidate_booked / client_rejected / done_no_booking. Pipeline `status` stays
    focused on engine state (queued/discovery/...complete); clientStatus tracks
    the human workflow on top of a complete brief. */
+/* v3.38.0 — Post-run quality report (Part 1 #1.a). When operator opens a
+   completed brief they get an honest diagnostic: was the run weak because of
+   their input, the market, or the engine? Combines rule-based facts (counts,
+   ratios, keyword heuristics) with an LLM-synthesised prose summary plus 1-3
+   concrete recommendations for the operator's next brief. Only useful for
+   completed runs; returns 409 for in-flight ones. */
+app.post('/api/briefs/:id/quality-report', auth.requireAuth, async (req, res) => {
+  const b = store.get(req.params.id);
+  if (!b) return res.status(404).json({ error: 'not found' });
+  if (b.status !== 'complete' && b.status !== 'failed') {
+    return res.status(409).json({ error: 'Quality report only available for completed runs' });
+  }
+
+  // ---- Rule-based facts ----
+  const keywords = b.keywords || [];
+  const must     = b.must || [];
+  const counts   = b.counts || {};
+  const accepted = counts.accepted || 0;
+  const rejected = counts.rejected || 0;
+  const discovered = counts.discovered || 0;
+  const acceptRate = (accepted + rejected) > 0 ? Math.round((accepted / (accepted + rejected)) * 100) : 0;
+
+  const GENERIC = new Set(['trainer','consultant','expert','sme','india','indian','specialist','professional','developer','engineer','instructor','teacher','coach','architect','tool','experts']);
+  const genericKeywords = keywords.filter(k => GENERIC.has(String(k || '').trim().toLowerCase()));
+  const proseMust = must.filter(m => String(m || '').split(/\s+/).length > 3);
+
+  // Peer comparison: similar mode, non-test, completed
+  const allBriefs = store.list();
+  const peers = allBriefs.filter(x => x.id !== b.id && x.status === 'complete' && !x.isTest && x.mode === b.mode && (x.counts || {}).accepted != null);
+  const peerAcceptRates = peers.map(x => {
+    const a = x.counts.accepted || 0, r = x.counts.rejected || 0;
+    return (a + r) > 0 ? (a / (a + r)) * 100 : 0;
+  }).filter(v => v > 0).sort((a, b) => a - b);
+  const peerMedianAcceptRate = peerAcceptRates.length ? Math.round(peerAcceptRates[Math.floor(peerAcceptRates.length / 2)]) : null;
+
+  const peerDiscovery = peers.map(x => x.counts.discovered || 0).filter(v => v > 0).sort((a, b) => a - b);
+  const peerMedianDiscovery = peerDiscovery.length ? peerDiscovery[Math.floor(peerDiscovery.length / 2)] : null;
+
+  const facts = {
+    inputs: {
+      keywordCount: keywords.length,
+      genericKeywords,
+      mustCount: must.length,
+      proseMust,
+      hasNoMustHave: must.length === 0,
+      searchMode: b.mode,
+    },
+    outcome: {
+      discovered, accepted, rejected, acceptRate,
+      lowYield: !!b.lowYield,
+      lowYieldReason: b.lowYieldReason || null,
+      preflight: b.preflight || null,
+    },
+    peerComparison: {
+      peerCount: peers.length,
+      peerMedianAcceptRate,
+      peerMedianDiscovery,
+      betterThanPeers: peerMedianAcceptRate != null && acceptRate > peerMedianAcceptRate + 5,
+      worseThanPeers:  peerMedianAcceptRate != null && acceptRate < peerMedianAcceptRate - 5,
+    },
+    feedbackIterations: ((b.iterationSummary || []).length) - 1,  // excluding the original run
+  };
+
+  // ---- LLM-synthesised summary + recommendations ----
+  // Wrapped in try so the rule-based facts always return even if LLM is down.
+  let summary = '';
+  let recommendations = [];
+  try {
+    const client = makeLlmClient();
+    if (client) {
+      const sys = `You are a sourcing-quality coach. Given a brief and its run results, write a SHORT (max 4 sentences), HONEST, NON-JUDGEMENTAL diagnostic of why the run performed as it did. Then list 1-3 concrete recommendations for the operator's next brief.
+
+Output ONLY valid JSON: { "summary": "...", "recommendations": ["...", "..."] }
+
+Be specific about CAUSES:
+- "Input quality" = operator typed weak keywords / no must-have / generic terms
+- "Market thinness" = the technology genuinely has few practitioners
+- "Engine issue" = something in the pipeline retried or failed
+- "Worked well" = run was strong; reinforce what to keep doing
+
+Recommendations should be ACTIONABLE and SPECIFIC. Reference the operator's actual keywords/must-have where relevant.`;
+      const user = `Brief title: ${b.title || ''}
+Original raw input: """${(b.rawInput || '').slice(0, 600)}"""
+Keywords: ${JSON.stringify(keywords)}
+Must-have: ${JSON.stringify(must)}
+Search mode: ${b.mode}
+Discovered ${discovered} candidates, accepted ${accepted}, rejected ${rejected} (${acceptRate}% accept rate).
+${peerMedianAcceptRate != null ? `Peers (similar mode, ${peers.length} runs) median accept rate: ${peerMedianAcceptRate}%.` : 'Not enough peer data yet.'}
+${b.lowYield ? `Run flagged as low-yield. Reason: ${b.lowYieldReason || ''}` : ''}
+${b.preflight ? `Pre-flight defensibility: ${b.preflight.yesCount}/${b.preflight.sampled} candidates passed the "would you send to client" gate.` : ''}
+${facts.feedbackIterations > 0 ? `Operator re-ran with feedback ${facts.feedbackIterations} time${facts.feedbackIterations > 1 ? 's' : ''}.` : ''}
+
+Write the JSON now.`;
+
+      const resp = await client.messages.create({
+        model: process.env.CLAUDE_MODEL_FAST || 'claude-haiku-4-5-20251001',
+        max_tokens: 600,
+        system: sys,
+        messages: [{ role: 'user', content: user }],
+      });
+      const out = (resp.content[0] && resp.content[0].text) || '';
+      try {
+        const m = out.match(/\{[\s\S]*\}/);
+        if (m) {
+          const j = JSON.parse(m[0]);
+          summary = String(j.summary || '').slice(0, 600);
+          if (Array.isArray(j.recommendations)) recommendations = j.recommendations.slice(0, 4).map(r => String(r).slice(0, 250));
+        }
+      } catch (_) {}
+    }
+  } catch (e) {
+    console.warn('[quality-report] LLM summary failed:', e.message);
+  }
+
+  res.json({ facts, summary, recommendations });
+});
+
 // v3.33.0 — PATCH the isTest flag on an existing brief. Used to backfill old
 // internal QA briefs so they stop polluting priors and analytics.
 app.patch('/api/briefs/:id/test-flag', auth.requireAuth, (req, res) => {
