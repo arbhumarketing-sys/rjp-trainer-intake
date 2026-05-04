@@ -2615,10 +2615,25 @@ function renderDetail(m) {
            <button class="btn primary" id="btn-run-full" style="margin-left:auto;">Run full pipeline</button>
          </div>`
     : (status === 'failed')
-      ? `<div class="download-bar" style="background:var(--bad-soft);color:var(--bad);border-color:var(--bad);">
-           <span>✗ Pipeline stopped: ${esc(b.error || 'unknown error')}</span>
-           <button class="btn" id="btn-retry" style="margin-left:auto;">Retry</button>
-         </div>`
+      ? (() => {
+          // v3.35.0 — categorized error banner with headline + remediation + retry CTA.
+          // Categories drive the icon and color; falls back to legacy single-line for
+          // briefs that failed before categorization existed.
+          const cat = b.errorCategory || '';
+          const ICONS = { search_quota: '⏳', config_missing: '🔧', auth_failed: '🔐', system_restart: '↻', bad_input: '📝', timeout: '⌛', service_down: '⚠', rate_limit: '🐢', unknown: '✗' };
+          const icon = ICONS[cat] || '✗';
+          const headline = b.error || 'Pipeline stopped';
+          const remediation = b.errorRemediation || '';
+          return `<div class="download-bar" style="background:var(--bad-soft);color:var(--bad);border-color:var(--bad);flex-direction:column;align-items:flex-start;gap:6px;padding:14px 16px;">
+            <div style="display:flex;align-items:center;gap:10px;width:100%;">
+              <span style="font-size:18px;">${icon}</span>
+              <strong style="flex:1;">${esc(headline)}</strong>
+              <button class="btn" id="btn-retry">Retry</button>
+            </div>
+            ${remediation ? `<div style="font-size:12.5px;color:#7F1D1D;line-height:1.5;padding-left:28px;font-weight:400;">${esc(remediation)}</div>` : ''}
+            ${cat ? `<div style="font-size:10.5px;color:#7F1D1D;opacity:0.7;padding-left:28px;text-transform:uppercase;letter-spacing:0.05em;">Category: ${esc(cat)}</div>` : ''}
+          </div>`;
+        })()
       : '';
 
   // Sample tables (after preview or completion)

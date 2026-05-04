@@ -157,6 +157,82 @@ function hasLlmClient() {
   return !!(Anthropic && process.env.ANTHROPIC_API_KEY);
 }
 
+/* v3.35.0 — Error categorization. Maps raw exceptions and status messages
+   onto a small set of operator-meaningful categories with a friendly headline
+   and a remediation hint. Used at every fatal-failure site so the brief
+   detail's failed-banner says something actionable instead of raw stack trace
+   or vendor jargon. Categories match the Render free-tier failure modes we've
+   seen most often: quota exhaustion, dyno restart, missing env config,
+   transient network errors, malformed inputs. */
+function categorizeError(errOrMsg) {
+  const errObj = (errOrMsg && typeof errOrMsg === 'object') ? errOrMsg : null;
+  const rawMsg = String((errObj && errObj.message) || errOrMsg || '').trim();
+  const msg = rawMsg.toLowerCase();
+  const status = (errObj && (errObj.status || errObj.statusCode)) || null;
+
+  if (msg.includes('orphan') || msg.includes('dyno restart') || msg.includes('watchdog') || msg.includes('stuck in')) {
+    return {
+      category: 'system_restart',
+      headline: 'Pipeline interrupted by server restart',
+      remediation: 'Free-tier dynos restart after idle. Click Retry to re-run — the next run won\'t pay any extra search cost since nothing was committed.',
+    };
+  }
+  if (msg.includes('monthly usage') || msg.includes('hard limit') || msg.includes('quota') || msg.includes('all accounts at cap') || msg.includes('quota exhausted')) {
+    return {
+      category: 'search_quota',
+      headline: 'Web-search quota exhausted',
+      remediation: 'All search accounts in the pool are at their monthly cap. The cycle resets per-account; check the pool status in /healthz, or contact admin to top up.',
+    };
+  }
+  if (msg.includes('not configured') || msg.includes('no apify token') || msg.includes('no token')) {
+    return {
+      category: 'config_missing',
+      headline: 'Required service not configured',
+      remediation: 'Admin: a backend service is missing its API token. Check Render env vars (APIFY_TOKEN, ANTHROPIC, etc.) and redeploy.',
+    };
+  }
+  if (msg.includes('only prose') || msg.includes('no usable trainer-profile') || msg.includes('contained only prose') || msg.includes('section headers')) {
+    return {
+      category: 'bad_input',
+      headline: 'Couldn\'t extract usable keywords from the input',
+      remediation: 'The keywords field looked like prose / instructions, not search terms. Re-submit with 1–4 short keywords (e.g., "Splunk Cloud trainer", "Salesforce admin").',
+    };
+  }
+  if (status === 401 || status === 403 || msg.includes('unauthorized') || msg.includes('forbidden') || msg.includes('invalid api key') || msg.includes('invalid token')) {
+    return {
+      category: 'auth_failed',
+      headline: 'External service authentication failed',
+      remediation: 'Admin: an API token may have expired or been revoked. Check Render env vars and rotate if needed.',
+    };
+  }
+  if (msg.includes('timeout') || msg.includes('timed out') || msg.includes('etimedout') || msg.includes('econnreset') || msg.includes('socket hang up')) {
+    return {
+      category: 'timeout',
+      headline: 'External service timed out',
+      remediation: 'Upstream service was slow. Click Retry — usually resolves on a fresh attempt.',
+    };
+  }
+  if (status === 500 || status === 502 || status === 503 || status === 504 || msg.includes('service unavailable') || msg.includes('bad gateway') || msg.includes('internal server error')) {
+    return {
+      category: 'service_down',
+      headline: 'External service temporarily unavailable',
+      remediation: 'Upstream search or LLM service had an issue. Click Retry — these usually self-resolve in a few minutes.',
+    };
+  }
+  if (msg.includes('rate limit') || msg.includes('too many requests') || status === 429) {
+    return {
+      category: 'rate_limit',
+      headline: 'Service rate-limited',
+      remediation: 'Auto-backoff was hit. Wait a couple of minutes and click Retry — the limit window will have reset.',
+    };
+  }
+  return {
+    category: 'unknown',
+    headline: rawMsg.slice(0, 140) || 'Unexpected error',
+    remediation: 'Click Retry. If it fails the same way twice, the log (expandable below) has details for the admin.',
+  };
+}
+
 // v3.12.0 — Phase 3d gate. SOP: "Also identify lab providers (if applicable)".
 // "Applicable" = the brief explicitly cares about lab access. We detect that
 // via the chat-flow's CLARIFYING ANSWERS block in steering ("Lab/hands-on
@@ -2555,14 +2631,20 @@ async function runPipeline(briefId, opts = {}) {
   // Replaces the single-token check; pool draws from APIFY_TOKEN +
   // APIFY_TOKEN_STUDY/TRAINING/RAKHI (whichever are set).
   if (!apifyPool.hasAccounts()) {
-    store.update(briefId, { status: 'failed', error: 'Web search service not configured. Contact admin.' });
-    logAndSave(briefId, 'Web search service not configured on server (admin: contact ops)', 'err');
+    {
+      const cat = categorizeError('Web search service not configured');
+      store.update(briefId, { status: 'failed', error: cat.headline, errorCategory: cat.category, errorRemediation: cat.remediation });
+      logAndSave(briefId, `${cat.headline}. ${cat.remediation}`, 'err');
+    }
     return;
   }
   const picked = await apifyPool.pickAccount();
   if (!picked) {
-    store.update(briefId, { status: 'failed', error: 'Web search quota exhausted. Wait for cycle reset or contact admin.' });
-    logAndSave(briefId, '[pool] All web-search accounts at cap. Brief cannot run.', 'err');
+    {
+      const cat = categorizeError('All accounts at cap — web search quota exhausted');
+      store.update(briefId, { status: 'failed', error: cat.headline, errorCategory: cat.category, errorRemediation: cat.remediation });
+      logAndSave(briefId, `${cat.headline}. ${cat.remediation}`, 'err');
+    }
     return;
   }
   const apifyAccountName = picked.name;
@@ -2596,8 +2678,11 @@ async function runPipeline(briefId, opts = {}) {
         if (cleaned.keywords.length === 0) {
           // Hard fail with a clear error rather than silently producing garbage
           const reason = 'Your keywords field contained only prose / instructions / section headers — no usable trainer-profile keywords could be extracted. Please provide 1-8 short keywords (1-5 words each) describing the trainer profile, e.g. "Splunk Observability Trainer", "Salesforce Admin Consultant".';
-          store.update(briefId, { status: 'failed', error: reason, retryable: false, originalMessyKeywords: brief.keywords });
-          logAndSave(briefId, reason, 'err');
+          {
+            const cat = categorizeError('Your keywords field contained only prose');
+            store.update(briefId, { status: 'failed', error: cat.headline, errorCategory: cat.category, errorRemediation: cat.remediation, retryable: false, originalMessyKeywords: brief.keywords });
+            logAndSave(briefId, `${cat.headline}. ${cat.remediation}`, 'err');
+          }
           return;
         }
         store.update(briefId, {
@@ -3017,7 +3102,10 @@ async function runPipeline(briefId, opts = {}) {
   } catch (e) {
     console.error('[pipeline error]', e);
     logAndSave(briefId, 'Pipeline failed: ' + e.message, 'err');
-    store.update(briefId, { status: 'failed', error: e.message });
+    {
+      const cat = categorizeError(e);
+      store.update(briefId, { status: 'failed', error: cat.headline, errorCategory: cat.category, errorRemediation: cat.remediation });
+    }
   }
 }
 
@@ -3066,12 +3154,15 @@ function startWatchdog() {
       if (stuckFor > STUCK_TIMEOUT_MS) stuck.push({ b, mins: Math.round(stuckFor / 60000) });
     }
     for (const { b, mins } of stuck) {
-      const reason = `Watchdog auto-failed: brief stuck in '${b.status}' for ${mins} min with no log activity. Likely a process restart or a hung external call. Click Retry to re-run.`;
+      const reason = `Watchdog auto-failed: brief stuck in '${b.status}' for ${mins} min with no log activity. Likely a process restart or a hung external call.`;
+      const cat = categorizeError(reason);
       store.update(b.id, {
         status: 'failed',
-        error: reason,
+        error: cat.headline,
+        errorCategory: cat.category,
+        errorRemediation: cat.remediation,
         retryable: true,
-        log: (b.log || []).concat([{ ts: new Date().toISOString(), msg: reason, kind: 'err' }]),
+        log: (b.log || []).concat([{ ts: new Date().toISOString(), msg: `${cat.headline}. ${cat.remediation}`, kind: 'err' }]),
       });
       console.warn(`[watchdog] auto-failed ${b.id} after ${mins}min in ${b.status}`);
     }
@@ -3094,12 +3185,15 @@ function reapOrphansOnBoot() {
   let reaped = 0;
   for (const b of store.list()) {
     if (!NON_TERMINAL_STATUSES.has(b.status)) continue;
-    const reason = `Pipeline orphaned by server restart. The brief was in '${b.status}' state when the dyno restarted; no process is now running it. Click Retry to re-run.`;
+    const reason = `Pipeline orphaned by server restart. The brief was in '${b.status}' state when the dyno restarted; no process is now running it.`;
+    const cat = categorizeError(reason);
     store.update(b.id, {
       status: 'failed',
-      error: reason,
+      error: cat.headline,
+      errorCategory: cat.category,
+      errorRemediation: cat.remediation,
       retryable: true,
-      log: (b.log || []).concat([{ ts: now, msg: reason, kind: 'err' }]),
+      log: (b.log || []).concat([{ ts: now, msg: `${cat.headline}. ${cat.remediation}`, kind: 'err' }]),
     });
     reaped++;
     console.warn(`[boot reaper] auto-failed orphan ${b.id} (was in ${b.status})`);
