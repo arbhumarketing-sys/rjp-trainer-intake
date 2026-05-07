@@ -1389,6 +1389,27 @@ function classifySignalRegex(it, bp, harvest) {
     }
   }
 
+  // 1.6. v3.39.0 — Domain-fit check. If brief has must-have skills set, the
+  // bio must demonstrate evidence of EACH of them. Strict regex match for the
+  // must-have term itself; LLM classifier (when available) handles fuzzier
+  // matches like certifications/products. This is the regex fallback only —
+  // it errs on the side of rejecting fuzzy matches the LLM would have caught,
+  // which is acceptable because regex is only used when LLM is unavailable.
+  if (bp.must && bp.must.length) {
+    for (const term of bp.must) {
+      if (!term) continue;
+      const t = String(term).toLowerCase().trim();
+      if (!t) continue;
+      // Strip "skills" / "experience" / "knowledge" suffix that operators sometimes paste in
+      const core = t.replace(/\s+(skills?|experience|knowledge|expertise)\s*$/i, '').trim();
+      if (!core) continue;
+      const re = new RegExp('\\b' + core.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i');
+      if (!re.test(blob2)) {
+        return { signal: 'DOMAIN_MISMATCH', reason: `Bio shows no evidence of must-have "${term}"` };
+      }
+    }
+  }
+
   // 2. Geo gate — strict via harvestapi if available, fall back to text
   const geoCheck = checkGeoIndia(blob2, harvest);
   if (!geoCheck.india) return { signal: 'NON_INDIA', reason: `Location parsed as ${geoCheck.detected}` };
@@ -1474,10 +1495,11 @@ const SIGNAL_POINTS = {
   BIG_FIRM:           0, // rejected
   NON_INDIA:          0, // rejected
   MUSTNOT_HIT:        0, // rejected — operator-specified term
+  DOMAIN_MISMATCH:    0, // rejected — bio shows wrong technology vs brief's must-have (v3.39.0)
   NOISE:              0, // rejected
 };
 
-const REJECTED_SIGNALS = new Set(['SPEAKER_ONLY', 'BIG_FIRM', 'NON_INDIA', 'MUSTNOT_HIT', 'NOISE']);
+const REJECTED_SIGNALS = new Set(['SPEAKER_ONLY', 'BIG_FIRM', 'NON_INDIA', 'MUSTNOT_HIT', 'DOMAIN_MISMATCH', 'NOISE']);
 
 /* ---------- LLM-based classifier (v3.2 — primary path, regex is fallback) ---------- */
 //
@@ -1561,30 +1583,40 @@ async function classifySignalLLM(batch, bp, briefId, batchOffset) {
   const sys = `You classify LinkedIn-style profiles for an Indian B2B trainer placement firm into ONE signal category each.
 
 Categories (use EXACT strings):
-  TRAINER_EXPLICIT  — bio EXPLICITLY says trainer/instructor + has training-delivery evidence (workshops, courses, cohorts, "delivered training")
-  FREELANCE_TRAINER — independent/freelance/self-employed + explicit training-delivery
-  TRAINER_IMPLIED   — Founder/Principal/Consultant at small firm; niche-domain bookable as trainer
-  INSTITUTE         — training institute/academy/bootcamp/edtech
-  PRACTITIONER      — has the skill, but NO teaching artefact (engineer/dev/architect/SRE/DBA/etc.)
+  TRAINER_EXPLICIT  — bio EXPLICITLY says trainer/instructor + training-delivery evidence + bio demonstrates the brief's must-have skill
+  FREELANCE_TRAINER — independent/freelance + explicit training-delivery + bio demonstrates the must-have skill
+  TRAINER_IMPLIED   — Founder/Principal/Consultant at small firm; niche-domain bookable; bio demonstrates the must-have skill
+  INSTITUTE         — training institute/academy/bootcamp/edtech (must offer the must-have skill)
+  PRACTITIONER      — has the must-have skill, but NO teaching artefact (engineer/dev/architect/SRE/DBA)
   SPEAKER_ONLY      — keynote/conference talks ONLY, no training-delivery → REJECTED
   BIG_FIRM          — CURRENT employee of an excluded company (see list) → REJECTED
   NON_INDIA         — location is NOT India → REJECTED
   MUSTNOT_HIT       — bio hits one of the operator's must-NOT terms → REJECTED
-  NOISE             — irrelevant to the brief → REJECTED
+  DOMAIN_MISMATCH   — IS a trainer based in India, BUT bio demonstrates DIFFERENT technology than the must-have requires → REJECTED
+  NOISE             — irrelevant / too sparse / not classifiable → REJECTED
 
 CRITICAL RULES:
-  1. Conference speakers without training-delivery evidence are SPEAKER_ONLY, not trainers.
-  2. Big-firm rule applies only to CURRENT employees. "ex-X", "former X", "previously at X", "earlier at X" → NOT BIG_FIRM (past employees are bookable trainers).
-  3. Geo: trust the countryCode field. If countryCode is non-IN, classify as NON_INDIA.
-  4. PRACTITIONER means skilled but no teaching evidence — it's not a rejection, just a low-scoring accept.
-  5. If the profile data is too sparse to decide, use NOISE.
+  1. MUST-HAVE ENFORCEMENT (the most important rule): if a must-have skill is set below, the bio/headline/about MUST demonstrate evidence of THAT specific skill.
+     - Evidence counts: the term itself, a closely-related certification (e.g. "Rubrik CDM" demonstrates Rubrik), a product feature ("vSphere" demonstrates VMware), or course content authored.
+     - Generic "cloud" / "infrastructure" / "trainer" alone is NOT evidence of a specific must-have.
+     - If the bio shows competing/different technology and NO trace of the must-have, classify as DOMAIN_MISMATCH (not TRAINER_EXPLICIT, not PRACTITIONER, not NOISE).
+     - Example: must-have is "Rubrik Cloud", bio says "VMware vSphere certified trainer, AWS Solutions Architect, 1500+ trainings delivered" → DOMAIN_MISMATCH (zero Rubrik evidence despite strong training credentials).
+     - Example: must-have is "Salesforce", bio says "Salesforce Admin Trainer, ADX-201 certified" → TRAINER_EXPLICIT (clear evidence).
+  2. Conference speakers without training-delivery evidence are SPEAKER_ONLY, not trainers.
+  3. Big-firm rule applies only to CURRENT employees. "ex-X", "former X", "previously at X", "earlier at X" → NOT BIG_FIRM.
+  4. Geo: trust the countryCode field. If countryCode is non-IN, classify as NON_INDIA.
+  5. PRACTITIONER requires the must-have skill — if bio lacks it, use DOMAIN_MISMATCH or NOISE, not PRACTITIONER.
+  6. If profile is too sparse to determine must-have evidence either way, use NOISE (don't guess).
+  7. If multiple must-have terms are listed below, ALL are required (AND, not OR). Lacking any one → DOMAIN_MISMATCH.
 
+MUST-HAVE SKILL(S) (REQUIRED — bio must demonstrate this; if not, → DOMAIN_MISMATCH): ${(bp.must || []).join(' AND ') || '(none set — domain match not enforced this run)'}
 EXCLUDED COMPANIES (current employees → BIG_FIRM): ${bp.exclusions.slice(0, 14).join(', ')}
 MUST-NOT TERMS (any hit → MUSTNOT_HIT): ${(bp.mustNot || []).join(', ') || '(none)'}
 ${steeringHint(bp.steering)}
 
 Output: ONLY a JSON array, one entry per profile, in INPUT ORDER.
-Format: [{"i":0,"signal":"TRAINER_EXPLICIT","reason":"≤10 word reason"}, ...]`;
+Format: [{"i":0,"signal":"TRAINER_EXPLICIT","reason":"≤10 word reason"}, ...]
+For DOMAIN_MISMATCH, the reason should name the wrong tech (e.g. "VMware/AWS, no Rubrik").`;
 
   const profilesText = batch.map(({ it, harvest }, idx) => {
     const lines = [`Profile ${idx}:`, `  Title: ${(it.title || '(none)').slice(0, 220)}`];
@@ -1772,11 +1804,21 @@ async function preflightQualityCheck(capped, brief, bp, briefId) {
   const samples = idxs.map(i => capped[i]);
 
   try {
-    const sys = `You are a senior client-relations consultant at a B2B trainer placement firm in India. For each candidate, judge: would you defensibly send this candidate to the client based on the brief? Reply ONLY a JSON array of "yes"/"no" verdicts in input order. No prose.`;
+    // v3.39.0 — preflight now pass must-have + uses domain-aware judgment.
+    // The prior generic "would you send to client" question let domain-mismatched
+    // candidates pass the gate. Now: a candidate qualifies ONLY if their
+    // evidence demonstrates the must-have skill. Strong training credentials
+    // for the wrong technology is a definite "no".
+    const mustList = (bp.must || []).filter(Boolean);
+    const mustClause = mustList.length
+      ? `The brief's must-have skill(s): ${mustList.join(' AND ')}. A candidate qualifies ONLY if their evidence (bio, sources, verify-note) demonstrates that specific skill — the term itself OR a closely-related certification/product/feature. A trainer with the wrong technology is a DEFINITE "no" regardless of how strong their general training credentials are.`
+      : `No must-have skill is set on this brief — judge purely on whether the candidate looks like a credible fit for the brief's title and keywords.`;
+    const sys = `You are a senior client-relations consultant at a B2B trainer placement firm in India. For each candidate, judge: would you defensibly send this person to a client looking for a trainer in this brief's domain? ${mustClause} Reply ONLY a JSON array of "yes"/"no" verdicts in input order. No prose.`;
 
     const user = `Brief: ${brief.title || '(untitled)'}
 Domain: ${brief.domain || '?'}
 Keywords: ${bp.keywords.join(', ')}
+Must-have skill(s): ${mustList.join(' AND ') || '(none)'}
 Mode: ${bp.searchMode}
 Operator direction: ${(bp.steering || '').slice(0, 400) || '(none)'}
 
@@ -1855,20 +1897,31 @@ async function multiPassRerank(accepted, brief, bp, briefId) {
   }
 
   try {
-    const sys = `You are an experienced sourcer at a B2B trainer placement firm in India. You re-rank candidates for a client brief based on holistic fit — cross-checking the classifier signal, the bio text, the source tier, and the web-verification result. You catch what the per-candidate scorer misses (e.g. a PRACTITIONER whose bio actually mentions 8 yrs of internal training, or a TRAINER_EXPLICIT whose tech is adjacent-but-not-target).
+    const sys = `You are an experienced sourcer at a B2B trainer placement firm in India. You re-rank AND filter candidates for a client brief based on holistic fit — cross-checking the classifier signal, the bio text, the source tier, and the web-verification result.
 
 Brief context:
   Title:           ${brief.title || '(untitled)'}
   Keywords:        ${bp.keywords.join(', ')}
   Mode:            ${bp.searchMode}
-  Must include:    ${(bp.must || []).join(', ') || '(none)'}
+  Must include:    ${(bp.must || []).join(' AND ') || '(none — domain match not enforced this run)'}
   Should include:  ${(bp.should || []).join(', ') || '(none)'}
   Must NOT:        ${(bp.mustNot || []).join(', ') || '(none)'}
   Excluded firms:  ${bp.exclusions.slice(0, 10).join(', ')}
   Operator steering: ${((bp.steering || '').slice(0, 800)) || '(none)'}${formatGradingsForPrompt(findRelevantGradings(bp))}${operatorPriorBlock}
 
-Output: JSON array of EXACTLY the top ${outputN} candidates (or fewer if input is smaller), best first.
-Format: [{"i": <input index>, "why": "<≤18 word holistic judgment>"}, ...]`;
+HARD RULES (non-negotiable):
+  1. If "Must include" is set, you MUST EXCLUDE any candidate whose evidence (bio / sources / verify) does not demonstrate that skill. A trainer with strong credentials but the wrong technology IS NOT a fit — exclude them. Do NOT rank a domain-mismatched candidate even at the bottom of the list.
+  2. If multiple must-haves are listed (joined by AND), candidates need ALL of them. Lacking any one → exclude.
+  3. "Demonstrating the skill" means: the term itself in the bio, OR a closely-related certification/product/feature (e.g. "Rubrik CDM" demonstrates Rubrik; "vSphere" demonstrates VMware). Generic "cloud", "infrastructure", "trainer" alone is NOT evidence.
+  4. It is BETTER to return 0 candidates than to return wrong-tech ones. The downstream gate will flag low-yield runs and the operator can re-run with broader criteria. Do NOT pad to outputN with weak matches.
+
+Soft signals (use after the hard rules pass):
+  - Boost: training-delivery evidence, freelance/independent, India-located, multi-source confidence, web-verification hits, operator-verdict prior signals.
+  - Demote: speaker-only, big-firm current employee, sparse bio, single-source.
+
+Output: JSON array of UP TO ${outputN} candidates (FEWER if not enough genuinely match the must-have), best first.
+Format: [{"i": <input index>, "why": "<≤18 word holistic judgment, must reference the must-have skill match>"}, ...]
+If you exclude a candidate, simply omit them — do not return them with a low rank.`;
 
     const candidatesText = top.map((c, i) => {
       return `Candidate ${i}:
