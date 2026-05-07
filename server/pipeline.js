@@ -3095,7 +3095,11 @@ async function runPipeline(briefId, opts = {}) {
       if (normalised.length === 0) {
         lowYieldReason = 'No candidates discovered from any source — web search may have returned no results, or every tier failed (check log for retry warnings). Try broader keywords or contact admin.';
       } else {
-        lowYieldReason = `Discovered ${normalised.length} candidates but ALL were filtered out. Most common cause: too-strict must-NOT terms, or the geo gate rejecting non-LinkedIn-enriched profiles. Review the Rejected (audit) tab.`;
+        // v3.39.0 — message updated to reflect that domain-fit (must-have) is now the most common
+        // filter, not mustNot/geo. The Rejected (audit) sheet shows the per-candidate reason.
+        lowYieldReason = (bp.must && bp.must.length)
+          ? `Discovered ${normalised.length} candidates but none demonstrated the must-have skill (${bp.must.join(' AND ')}) in their bio. Likely causes: (a) the market for this specific tech in India is genuinely thin, (b) the must-have term is too narrow — try a broader form (e.g. "Salesforce" instead of "Salesforce Marketing Cloud Admin"), or (c) check the Rejected (audit) tab to see specific reasons.`
+          : `Discovered ${normalised.length} candidates but ALL were filtered out. Most common causes: too-strict must-NOT terms, or the geo gate rejecting non-LinkedIn-enriched profiles. Review the Rejected (audit) tab.`;
       }
     } else if (countLow) {
       lowYieldReason = `Only ${capped.length} candidates surfaced (target ≥${lowYieldThreshold}). Consider broadening keywords, relaxing must-NOT, or switching to Niche mode if the tech is rare.`;
